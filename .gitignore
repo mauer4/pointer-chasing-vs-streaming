@@ -1,0 +1,25 @@
+# --- third-party deps (do not track) ---
+/third_party/champsim/
+
+# --- build outputs ---
+/build/
+*.o
+*.a
+*.so
+*.out
+/bin/
+
+# --- traces & simulation outputs (do not track) ---
+/traces/
+/results/
+
+# --- notebooks ---
+.ipynb_checkpoints/
+
+# Optional: if you don't want to track notebook execution noise
+# (keep commented if you want to track notebooks themselves)
+# /notebooks/*.ipynb
+
+# --- OS/editor ---
+.vscode/
+.DS_Store
