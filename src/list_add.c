@@ -6,7 +6,7 @@
 #include <time.h>
 
 #ifndef DEFAULT_N
-#define DEFAULT_N 100000
+#define DEFAULT_N 4000000
 #endif
 
 typedef struct Node {
@@ -14,11 +14,22 @@ typedef struct Node {
     struct Node* next;
 } Node;
 
+// ROI Markers
+__attribute__((noinline)) void champsim_roi_begin() {
+    __asm__ volatile("");
+}
+
+__attribute__((noinline)) void champsim_roi_end() {
+    __asm__ volatile("");
+}
+
+#ifndef TRACING
 static uint64_t now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
+#endif
 
 static int parse_n(int argc, char** argv) {
     if (argc < 2) return DEFAULT_N;
@@ -34,8 +45,7 @@ static int parse_n(int argc, char** argv) {
 int main(int argc, char** argv) {
     int n = parse_n(argc, argv);
 
-    // Allocate nodes. We intentionally keep pointer-chasing behavior.
-    // For determinism, values follow a simple pattern.
+    // Allocate nodes.
     Node* head = NULL;
     for (int i = n - 1; i >= 0; i--) {
         Node* node = (Node*)malloc(sizeof(Node));
@@ -49,17 +59,23 @@ int main(int argc, char** argv) {
     }
 
     volatile int64_t sum = 0;
-    uint64_t t0 = now_ns();
 
+#ifndef TRACING
+    uint64_t t0 = now_ns();
+#endif
+
+    champsim_roi_begin();
     Node* cur = head;
     while (cur) {
         sum += cur->value;
         cur = cur->next;
     }
+    champsim_roi_end();
 
+#ifndef TRACING
     uint64_t t1 = now_ns();
-
     printf("workload=list_add n=%d sum=%lld time_ns=%llu\n", n, (long long)sum, (unsigned long long)(t1 - t0));
+#endif
 
     // Free
     cur = head;

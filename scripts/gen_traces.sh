@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CHAMPSIM_DIR="${ROOT_DIR}/third_party/champsim"
 TRACER_DIR="${CHAMPSIM_DIR}/tracer/pin"
 TRACER_SO="${TRACER_DIR}/obj-intel64/champsim_tracer.so"
-WORKLOAD_BIN_DIR="${ROOT_DIR}/build/bin"
+WORKLOAD_BIN_DIR="${ROOT_DIR}/bin"
 TRACE_ROOT="${ROOT_DIR}/traces"
 LOG_ROOT="${ROOT_DIR}/results/traces"
 
@@ -26,21 +26,25 @@ PIN_BIN="${PIN_ROOT:-}/pin"
 
 usage() {
   cat <<EOF
-Usage: $0 [--n N] [--compress] [--dry-run]
-  --n N         Number of elements (default 100000)
-  --compress    Compress traces with xz
-  --dry-run     Print commands only
+Usage: $0 [--n N] [--compress] [--trace-bin SUFFIX] [--dry-run]
+  --n N              Number of elements (default 4000000)
+  --compress         Compress traces with xz
+  --trace-bin SUFFIX Suffix for binary (e.g., _trace for array_add_trace)
+  --dry-run          Print commands only
 EOF
 }
 
-N=100000
+N=4000000
 COMPRESS=0
 DRYRUN=0
+BIN_SUFFIX=""
+PIN_TRACE_TAKE=20000000 # 20M instructions
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --n) N="$2"; shift 2;;
     --compress) COMPRESS=1; shift;;
+    --trace-bin) BIN_SUFFIX="$2"; shift 2;;
     --dry-run) DRYRUN=1; shift;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown arg: $1" >&2; usage; exit 1;;
@@ -57,8 +61,12 @@ if [[ ! -f "${TRACER_SO}" ]]; then
   exit 1
 fi
 
-if [[ ! -x "${WORKLOAD_BIN_DIR}/array_add" || ! -x "${WORKLOAD_BIN_DIR}/list_add" ]]; then
-  echo "[trace] Workload binaries missing. Run scripts/build_workloads.sh (and ensure they are under build/bin)." >&2
+ARRAY_BIN="${WORKLOAD_BIN_DIR}/array_add${BIN_SUFFIX}"
+LIST_BIN="${WORKLOAD_BIN_DIR}/list_add${BIN_SUFFIX}"
+
+if [[ ! -x "${ARRAY_BIN}" || ! -x "${LIST_BIN}" ]]; then
+  echo "[trace] Workload binaries missing: ${ARRAY_BIN} or ${LIST_BIN}." >&2
+  echo "[trace] Run scripts/build_variants.sh." >&2
   exit 1
 fi
 
@@ -76,7 +84,9 @@ run_one() {
   local trace_path_xz="${trace_path}.xz"
   local latest_link="${out_dir}/latest.champsimtrace"
 
-  local cmd=("${PIN_BIN}" -t "${TRACER_SO}" -o "${trace_path}" -s "${PIN_TRACE_SKIP:-0}" -t "${PIN_TRACE_TAKE:-1000000}" -- "${bin}" "${N}")
+  # -s 0: skip 0 instructions
+  # -t N: take N instructions
+  local cmd=("${PIN_BIN}" -t "${TRACER_SO}" -o "${trace_path}" -s "0" -t "${PIN_TRACE_TAKE}" -- "${bin}" "${N}")
 
   echo "[trace] ${name}: ${trace_path}"
   if [[ ${DRYRUN} -eq 1 ]]; then
@@ -99,5 +109,5 @@ run_one() {
   echo "[trace] ${name}: wrote $(basename "${trace_path}")"
 }
 
-run_one "array_add" "${WORKLOAD_BIN_DIR}/array_add"
-run_one "list_add" "${WORKLOAD_BIN_DIR}/list_add"
+run_one "array_add" "${ARRAY_BIN}"
+run_one "list_add" "${LIST_BIN}"
