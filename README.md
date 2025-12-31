@@ -100,9 +100,11 @@ bash scripts/install_pin.sh
 bash scripts/build_champsim_tracer.sh
 ```
 
-4) Build microbenchmarks (array + linked list)
+4) Build workloads (array + linked list)
 ```bash
-bash scripts/build_benches.sh
+bash scripts/build_workloads.sh
+# (if needed) copy to build/bin for the tracing script
+mkdir -p build/bin && cp -v bin/* build/bin/
 ```
 
 5) Generate traces with PIN + ChampSim tracer

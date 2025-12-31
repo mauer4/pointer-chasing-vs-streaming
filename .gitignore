@@ -1,5 +1,8 @@
 # --- third-party deps (do not track) ---
 /third_party/champsim/
+/third_party/pin/
+/third_party/pin-*/
+/third_party/*.tar.gz
 
 # --- build outputs ---
 /build/
