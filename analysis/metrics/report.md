@@ -35,7 +35,7 @@
 | workload | runtime (ms) |
 |---|---:|
 | array_add_stack | 0.053 |
-| list_add_stack | 0.172 |
+| list_add_stack | 0.175 |
 
-**Wall-clock speedup (array / list):** 3.242
+**Wall-clock speedup (array / list):** 3.295
 
