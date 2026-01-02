@@ -10,6 +10,7 @@ CONFIG_FILE="${CONFIG_FILE:-$ROOT_DIR/config/workloads.conf}"
 
 RUN_METRICS="${RUN_METRICS:-0}"
 TRACE_BIN_SUFFIX="${TRACE_BIN_SUFFIX:-_trace}"
+REGEN_TRACES="${REGEN_TRACES:-0}"
 
 WORKLOAD_N="${WORKLOAD_N:-100000}" # backward compat; per-workload n_* overrides
 INCLUDE_STACK="${INCLUDE_STACK:-0}"
@@ -24,6 +25,7 @@ Options:
                     You can also set INCLUDE_STACK=1 in the environment.
   --stack-only      Run only the stack-based workloads (implies --include-stack). You can also set STACK_ONLY=1.
   --run-metrics     Run analysis/generate_metrics.py after simulations. You can also set RUN_METRICS=1.
+  --regen-traces    Force regeneration of traces even if existing compressed traces are present. REGEN_TRACES=1.
   -h, --help        Show this help.
 EOF
 }
@@ -39,6 +41,9 @@ for arg in "$@"; do
       ;;
     --run-metrics)
       RUN_METRICS=1
+      ;;
+    --regen-traces)
+      REGEN_TRACES=1
       ;;
     -h|--help)
       usage
@@ -58,7 +63,10 @@ build_trace_bin() {
   local w="$1"
   local src="$ROOT_DIR/src/${w}.c"
   local out="$BIN_DIR/${w}${TRACE_BIN_SUFFIX}"
-  if [[ ! -x "$out" ]]; then
+  if [[ -x "$out" ]]; then
+    echo "[trace-bin] Reusing existing trace binary: $out"
+  else
+    echo "[trace-bin] Building trace binary: $out"
     cc -O2 -std=c11 -Wall -Wextra -pedantic -DTRACING -o "$out" "$src"
   fi
   echo "$out"
@@ -108,14 +116,19 @@ gen_trace() {
 
   local trace_out_xz="${trace_out}.xz"
 
-  if [[ -f "$trace_out" ]]; then
-    echo "[trace] Reusing existing trace: $trace_out"
-    return 0
+  if [[ "$REGEN_TRACES" -eq 1 ]]; then
+    rm -f "$trace_out" "$trace_out_xz"
   fi
 
-  if [[ -f "$trace_out_xz" ]]; then
-    echo "[trace] Reusing existing compressed trace: $trace_out_xz"
-    return 0
+  if [[ -f "$trace_out" || -f "$trace_out_xz" ]]; then
+    if [[ "$REGEN_TRACES" -ne 1 ]]; then
+      if [[ -f "$trace_out_xz" ]]; then
+        echo "[trace] Reusing existing compressed trace: $trace_out_xz"
+      else
+        echo "[trace] Reusing existing trace: $trace_out"
+      fi
+      return 0
+    fi
   fi
 
 
@@ -199,29 +212,25 @@ for w in "${WORKLOADS[@]}"; do
   eval "SIM_W=\${sim_${w}:-${CHAMPSIM_SIM_INSTRUCTIONS:-40000000}}"
 
   trace_base="$(trace_for_workload "$w" "$N_W")"
-  trace_path="${trace_base}.xz"
-  if [[ ! -f "$trace_path" && -f "$trace_base" ]]; then
-    trace_path="$trace_base"
-  fi
 
-  if [[ ! -f "$trace_path" ]]; then
-    echo "[run] missing trace $trace_path (run scripts/gen_traces.sh)" >&2
-    TRACE_ERRORS=1
-    continue
-  fi
-
-  # Attempt trace generation (best-effort)
+  # Build tracing binary (if missing) and ensure trace exists; with REGEN_TRACES=1 we
+  # will regenerate even if a compressed trace exists.
   trace_bin="$(build_trace_bin "$w")"
 
   gen_trace "$w" "$trace_bin" "$trace_base"
   rc=$?
-  if [[ $rc -eq 0 ]]; then
-    if [[ -f "${trace_base}.xz" ]]; then
-      trace_path="${trace_base}.xz"
-    elif [[ -f "$trace_base" ]]; then
-      trace_path="$trace_base"
-    fi
+  if [[ $rc -ne 0 ]]; then
+    TRACE_ERRORS=1
+    continue
+  fi
+
+  # Prefer compressed trace, fall back to uncompressed
+  if [[ -f "${trace_base}.xz" ]]; then
+    trace_path="${trace_base}.xz"
+  elif [[ -f "$trace_base" ]]; then
+    trace_path="$trace_base"
   else
+    echo "[run] Expected trace not found after generation: ${trace_base}[.xz]" >&2
     TRACE_ERRORS=1
     continue
   fi

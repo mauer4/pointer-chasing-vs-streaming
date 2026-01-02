@@ -6,6 +6,7 @@ CONFIG_FILE="${CONFIG_FILE:-$ROOT_DIR/config/workloads.conf}"
 INCLUDE_STACK=${INCLUDE_STACK:-0}
 STACK_ONLY=${STACK_ONLY:-0}
 RUN_METRICS=${RUN_METRICS:-0}
+REGEN_TRACES=${REGEN_TRACES:-0}
 
 usage() {
   cat <<EOF
@@ -22,6 +23,7 @@ Flags:
   --include-stack   Also include stack workloads (array_add_stack, list_add_stack).
   --stack-only      Only run stack workloads (implies --include-stack).
   --run-metrics     Run the metrics report after all runs.
+  --regen-traces    Force regeneration of traces even if compressed traces exist.
   -h, --help        Show this help.
 
 Environment overrides:
@@ -35,6 +37,7 @@ for arg in "$@"; do
     --include-stack) INCLUDE_STACK=1 ;;
     --stack-only) STACK_ONLY=1; INCLUDE_STACK=1 ;;
     --run-metrics) RUN_METRICS=1 ;;
+    --regen-traces) REGEN_TRACES=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[run_all] Unknown argument: $arg" >&2; usage; exit 2 ;;
   esac
@@ -50,18 +53,28 @@ fi
 
 # 1) Build + generate traces (tracing binaries)
 echo "[run_all] Generating traces via scripts/gen_traces.sh"
-CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" \
-  "$ROOT_DIR/scripts/gen_traces.sh" "${STACK_ARGS[@]:-}" || true
+echo "[run_all] Note: run_traces.sh will reuse existing traces unless --regen-traces is set."
+echo "[run_all] (Optional) To pre-generate traces explicitly, run: scripts/gen_traces.sh"
 
 # 2) Run ChampSim on traces (metrics postponed to end)
 echo "[run_all] Running ChampSim simulations via scripts/run_traces.sh"
-CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 \
-  "$ROOT_DIR/scripts/run_traces.sh" "${STACK_ARGS[@]:-}" || true
+if (( ${#STACK_ARGS[@]} )); then
+  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 REGEN_TRACES="$REGEN_TRACES" \
+    "$ROOT_DIR/scripts/run_traces.sh" "${STACK_ARGS[@]}" || true
+else
+  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 REGEN_TRACES="$REGEN_TRACES" \
+    "$ROOT_DIR/scripts/run_traces.sh" || true
+fi
 
 # 3) Run native (non-trace) binaries
 echo "[run_all] Running native binaries via scripts/run_native.sh"
-CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" \
-  "$ROOT_DIR/scripts/run_native.sh" "${STACK_ARGS[@]:-}" || true
+if (( ${#STACK_ARGS[@]} )); then
+  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" \
+    "$ROOT_DIR/scripts/run_native.sh" "${STACK_ARGS[@]}" || true
+else
+  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" \
+    "$ROOT_DIR/scripts/run_native.sh" || true
+fi
 
 # 4) Optional metrics generation (after all runs)
 if [[ "$RUN_METRICS" -eq 1 ]]; then

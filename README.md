@@ -54,13 +54,21 @@ This produces:
 ### 3) Generate traces + run ChampSim
 
 ```bash
-./scripts/run_traces.sh                     # heap workloads only (default)
+./scripts/run_traces.sh                     # heap workloads only (default). Reuses existing traces.
 ./scripts/run_traces.sh --include-stack     # include stack workloads too
 ./scripts/run_traces.sh --stack-only        # stack workloads only
-# run and then auto-generate metrics report
+
+# Force regenerating traces (useful if the tracing binary changed)
+./scripts/run_traces.sh --regen-traces
+
+# Run and then auto-generate metrics report
 ./scripts/run_traces.sh --run-metrics
-# env equivalents: INCLUDE_STACK=1 ./scripts/run_traces.sh, STACK_ONLY=1 ./scripts/run_traces.sh
-./scripts/run_native.sh                     # run non-tracing binaries and capture stdout to results/non-trace/
+
+# Run non-tracing binaries and capture stdout to results/non-trace/
+./scripts/run_native.sh
+
+# One-shot end-to-end (native + sims + optional report)
+./scripts/run_all.sh --run-metrics
 ```
 
 Traces are compressed by default (`.xz`). Both scripts will also accept uncompressed traces if you run `gen_traces.sh --no-compress`.
@@ -88,6 +96,8 @@ To generate traces automatically, you must provide a built Intel PIN distributio
 - `PIN_ROOT=/path/to/pin-*/` (must contain an executable `pin` at `$PIN_ROOT/pin`)
 
 If `PIN_ROOT` is not set, `scripts/run_traces.sh` will stop and tell you exactly which trace files it expects you to provide under `traces/`.
+
+By default, `scripts/run_traces.sh` **reuses an existing compressed trace** (`.xz`) if it exists. Use `--regen-traces` to force regeneration.
 
 You can control run sizes with:
 
