@@ -2,10 +2,10 @@
 
 ### Heap
 
-| workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses | LLC load hit rate | LLC load miss rate | L1D load MSHR merges |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| array_add | 3.227 | 54.58% | 45.42% | 73151 | 99.84% | 0.16% | 28650 |
-| list_add | 1.130 | 98.50% | 1.50% | 470560 | 0.00% | 0.00% | 7030 |
+| workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses | LLC load hit rate | LLC load miss rate | L1D load MSHR merges | L1D load MSHR rate |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| array_add | 3.227 | 54.58% | 45.42% | 73151 | 99.84% | 0.16% | 28650 | 39.1656% |
+| list_add | 1.130 | 98.50% | 1.50% | 470560 | 0.00% | 0.00% | 7030 | 1.4940% |
 
 **IPC speedup (array / list):** 2.856
 
@@ -22,10 +22,10 @@
 
 ### Stack
 
-| workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses | LLC load hit rate | LLC load miss rate | L1D load MSHR merges |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| array_add_stack | 2.805 | 58.56% | 41.44% | 160862 | 80.39% | 19.61% | 56273 |
-| list_add_stack | 1.401 | 86.55% | 13.45% | 132363 | 87.22% | 12.78% | 1895 |
+| workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses | LLC load hit rate | LLC load miss rate | L1D load MSHR merges | L1D load MSHR rate |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| array_add_stack | 2.805 | 58.56% | 41.44% | 160862 | 80.39% | 19.61% | 56273 | 34.9822% |
+| list_add_stack | 1.401 | 86.55% | 13.45% | 132363 | 87.22% | 12.78% | 1895 | 1.4317% |
 
 **IPC speedup (array / list):** 2.002
 

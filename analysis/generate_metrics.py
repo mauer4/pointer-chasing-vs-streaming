@@ -106,6 +106,9 @@ def parse_sim_metrics(sim_path: Path) -> Optional[Dict[str, float]]:
 
     if mshr_match:
         metrics["l1d_load_mshr_merge"] = float(mshr_match.group(1))
+        metrics["l1d_load_mshr_rate"] = (
+            metrics["l1d_load_mshr_merge"] / metrics["l1d_access"] if metrics["l1d_access"] else 0.0
+        )
 
     return metrics
 
@@ -141,15 +144,15 @@ def runtime_file_for(workload: str, n: str) -> Path:
 def render_table(title: str, rows: list[dict], speedup: Optional[float]) -> str:
     if not rows:
         return f"### {title}\n\n_No data found._\n\n"
-    header = "| workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses | LLC load hit rate | LLC load miss rate | L1D load MSHR merges |\n"
-    sep = "|---|---:|---:|---:|---:|---:|---:|---:|\n"
+    header = "| workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses | LLC load hit rate | LLC load miss rate | L1D load MSHR merges | L1D load MSHR rate |\n"
+    sep = "|---|---:|---:|---:|---:|---:|---:|---:|---:|\n"
     body_lines = []
     for r in rows:
         llc_hit_rate = r.get("llc_hit_rate")
         llc_miss_rate = r.get("llc_miss_rate")
         l1d_mshr = r.get("l1d_load_mshr_merge")
         body_lines.append(
-            "| {name} | {ipc:.3f} | {l1h:.2f}% | {l1m:.2f}% | {l1a} | {llch} | {llcm} | {mshr} |".format(
+            "| {name} | {ipc:.3f} | {l1h:.2f}% | {l1m:.2f}% | {l1a} | {llch} | {llcm} | {mshr} | {mshrr} |".format(
                 name=r["name"],
                 ipc=r["ipc"],
                 l1h=r["l1d_hit_rate"] * 100,
@@ -158,6 +161,9 @@ def render_table(title: str, rows: list[dict], speedup: Optional[float]) -> str:
                 llch=(f"{llc_hit_rate*100:.2f}%" if llc_hit_rate is not None else "-"),
                 llcm=(f"{llc_miss_rate*100:.2f}%" if llc_miss_rate is not None else "-"),
                 mshr=(f"{int(l1d_mshr)}" if l1d_mshr is not None else "-"),
+                mshrr=(
+                    f"{r['l1d_load_mshr_rate']*100:.4f}%" if r.get("l1d_load_mshr_rate") is not None else "-"
+                ),
             )
         )
     table = "### " + title + "\n\n" + header + sep + "\n".join(body_lines) + "\n\n"
