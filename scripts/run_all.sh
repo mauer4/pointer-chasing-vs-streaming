@@ -51,32 +51,37 @@ if [[ "$STACK_ONLY" -eq 1 ]]; then
   STACK_ARGS+=("--stack-only")
 fi
 
-# 1) Build + generate traces (tracing binaries)
-echo "[run_all] Generating traces via scripts/gen_traces.sh"
-echo "[run_all] Note: run_traces.sh will reuse existing traces unless --regen-traces is set."
-echo "[run_all] (Optional) To pre-generate traces explicitly, run: scripts/gen_traces.sh"
+echo "[run_all] Step 1/5: Building workloads (trace + non-trace)"
+CONFIG_FILE="$CONFIG_FILE" "$ROOT_DIR/scripts/build_workloads.sh"
 
-# 2) Run ChampSim on traces (metrics postponed to end)
-echo "[run_all] Running ChampSim simulations via scripts/run_traces.sh"
+echo "[run_all] Step 2/5: Generating traces via scripts/gen_traces.sh"
 if (( ${#STACK_ARGS[@]} )); then
-  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 REGEN_TRACES="$REGEN_TRACES" \
-    "$ROOT_DIR/scripts/run_traces.sh" "${STACK_ARGS[@]}" || true
+  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" REGEN_TRACES="$REGEN_TRACES" \
+    "$ROOT_DIR/scripts/gen_traces.sh" "${STACK_ARGS[@]}"
 else
-  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 REGEN_TRACES="$REGEN_TRACES" \
-    "$ROOT_DIR/scripts/run_traces.sh" || true
+  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" REGEN_TRACES="$REGEN_TRACES" \
+    "$ROOT_DIR/scripts/gen_traces.sh"
 fi
 
-# 3) Run native (non-trace) binaries
-echo "[run_all] Running native binaries via scripts/run_native.sh"
+echo "[run_all] Step 3/5: Running ChampSim simulations via scripts/run_traces.sh"
 if (( ${#STACK_ARGS[@]} )); then
-  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" \
-    "$ROOT_DIR/scripts/run_native.sh" "${STACK_ARGS[@]}" || true
+  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 \
+    "$ROOT_DIR/scripts/run_traces.sh" "${STACK_ARGS[@]}"
 else
-  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" \
-    "$ROOT_DIR/scripts/run_native.sh" || true
+  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 \
+    "$ROOT_DIR/scripts/run_traces.sh"
 fi
 
-# 4) Optional metrics generation (after all runs)
+echo "[run_all] Step 4/5: Running native binaries via scripts/run_native.sh"
+if (( ${#STACK_ARGS[@]} )); then
+  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" \
+    "$ROOT_DIR/scripts/run_native.sh" "${STACK_ARGS[@]}"
+else
+  CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" \
+    "$ROOT_DIR/scripts/run_native.sh"
+fi
+
+echo "[run_all] Step 5/5: Metrics generation"
 if [[ "$RUN_METRICS" -eq 1 ]]; then
   METRICS_SCRIPT="$ROOT_DIR/analysis/generate_metrics.py"
   if [[ -f "$METRICS_SCRIPT" ]]; then
@@ -89,4 +94,4 @@ else
   echo "[run_all] Skipping metrics (enable with --run-metrics or RUN_METRICS=1)"
 fi
 
-echo "[run_all] Done. Traces under $ROOT_DIR/traces, simulations under $ROOT_DIR/results/, native runs under $ROOT_DIR/results/non-trace/."
+echo "[run_all] Done."

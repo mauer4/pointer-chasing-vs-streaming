@@ -38,79 +38,95 @@ After a successful setup, you should have:
 - ChampSim binary: `third_party/champsim/bin/champsim`
 - Binary options file (sanity check): `third_party/champsim/absolute.options` (must include a non-empty `-isystem .../vcpkg_installed/.../include`)
 
-### 2) Build workloads
+### 2) Build workloads (trace + non-trace)
 
 ```bash
 ./scripts/build_workloads.sh
 ```
 
-This produces:
+This produces both regular and trace-enabled binaries:
 
-- `bin/array_add`
-- `bin/list_add`
-- `bin/array_add_stack`
-- `bin/list_add_stack`
+- `bin/array_add`, `bin/list_add`, `bin/array_add_stack`, `bin/list_add_stack`
+- `bin/array_add_trace`, `bin/list_add_trace`, `bin/array_add_stack_trace`, `bin/list_add_stack_trace`
 
-### 3) Generate traces + run ChampSim
+### 3) Generate traces (PIN → ChampSim trace)
 
 ```bash
-./scripts/run_traces.sh                     # heap workloads only (default). Reuses existing traces.
-./scripts/run_traces.sh --include-stack     # include stack workloads too
-./scripts/run_traces.sh --stack-only        # stack workloads only
+# Heap only (default)
+./scripts/gen_traces.sh
 
-# Force regenerating traces (useful if the tracing binary changed)
-./scripts/run_traces.sh --regen-traces
+# Include stack variants
+./scripts/gen_traces.sh --include-stack
+./scripts/gen_traces.sh --stack-only        # only stack variants
 
-# Run and then auto-generate metrics report
-./scripts/run_traces.sh --run-metrics
-
-# Run non-tracing binaries and capture stdout to results/non-trace/
-./scripts/run_native.sh
-
-# One-shot end-to-end (native + sims + optional report)
-./scripts/run_all.sh --run-metrics
+# Force regenerate traces
+./scripts/gen_traces.sh --regen-traces
 ```
 
-Traces are compressed by default (`.xz`). Both scripts will also accept uncompressed traces if you run `gen_traces.sh --no-compress`.
+Traces are compressed by default (`.xz`) and reused on subsequent runs unless `--regen-traces` is set.
+
+### 4) Run ChampSim on existing traces (no retracing)
+
+```bash
+./scripts/run_traces.sh                     # heap only
+./scripts/run_traces.sh --include-stack     # include stack workloads
+./scripts/run_traces.sh --stack-only        # only stack workloads
+
+# Optional: generate metrics after sims
+./scripts/run_traces.sh --run-metrics
+```
+
+To rerun only the simulations with new instruction budgets: update `config/workloads.conf` and rerun `scripts/run_traces.sh` (no PIN involved).
+
+### 5) Run native (non-trace) binaries
+
+```bash
+./scripts/run_native.sh           # heap only
+./scripts/run_native.sh --include-stack
+./scripts/run_native.sh --stack-only
+```
+
+### 6) One-shot orchestration
+
+```bash
+./scripts/run_all.sh --include-stack --run-metrics   # builds, traces, sims, native, metrics
+./scripts/run_all.sh --regen-traces                  # force retracing first
+```
 
 ### Workload config
 
 Workloads and their per-benchmark settings live in `config/workloads.conf`:
 
 - `WORKLOADS`: ordered list (e.g., `array_add list_add array_add_stack list_add_stack`)
+- Global defaults: `WORKLOAD_N`, `CHAMPSIM_WARMUP_INSTRUCTIONS`, `CHAMPSIM_SIM_INSTRUCTIONS`
 - Per-workload keys: `n_<name>`, `warmup_<name>`, `sim_<name>`, `stack_<name>` (1 for stack variant)
 
 Both `scripts/gen_traces.sh` and `scripts/run_traces.sh` read this file and honor `--stack-only` / `--include-stack` filtering. You can override `CONFIG_FILE` to point at a different config.
 
-### Tracing prerequisites (Intel PIN)
+Tracing prerequisites (Intel PIN)
 
-ChampSim can simulate **only from traces**. This repo uses ChampSim's bundled **Intel PIN** tracer (`third_party/champsim/tracer/pin`).
+ChampSim simulates **from traces**. This repo uses ChampSim's bundled **Intel PIN** tracer (`third_party/champsim/tracer/pin`) to create them. Only `scripts/gen_traces.sh` needs PIN; `scripts/run_traces.sh` consumes existing traces and does **not** require PIN.
 
-Do you need to install the pintool?
-
-- **Yes, if you want this repo to generate traces from the C workloads automatically.**
-- **No, if you already have compatible ChampSim traces** (you can drop them into `traces/` and skip PIN entirely).
-
-To generate traces automatically, you must provide a built Intel PIN distribution and set:
+To generate traces automatically, provide a built Intel PIN distribution and set:
 
 - `PIN_ROOT=/path/to/pin-*/` (must contain an executable `pin` at `$PIN_ROOT/pin`)
 
-If `PIN_ROOT` is not set, `scripts/run_traces.sh` will stop and tell you exactly which trace files it expects you to provide under `traces/`.
+If `PIN_ROOT` is not set, `scripts/gen_traces.sh` will stop and tell you which trace files are missing under `traces/`.
 
-By default, `scripts/run_traces.sh` **reuses an existing compressed trace** (`.xz`) if it exists. Use `--regen-traces` to force regeneration.
+By default, `scripts/gen_traces.sh` reuses an existing compressed trace (`.xz`). Use `--regen-traces` to force regeneration.
 
 You can control run sizes with:
 
 - `WORKLOAD_N` (default `100000`)
 - `CHAMPSIM_WARMUP_INSTRUCTIONS` (default `500000`)
-- `CHAMPSIM_SIM_INSTRUCTIONS` (default `20000000`)
-- `INCLUDE_STACK=1` (or `--include-stack`) to include the stack-based workloads in `run_traces.sh`
-- `STACK_ONLY=1` (or `--stack-only`) to run only the stack-based workloads (implies INCLUDE_STACK)
+- `CHAMPSIM_SIM_INSTRUCTIONS` (default `40000000`)
+- `INCLUDE_STACK=1` / `--include-stack` to include the stack-based workloads
+- `STACK_ONLY=1` / `--stack-only` to run only the stack-based workloads
 
 Expected artifacts after a successful run:
 
-- Traces: `traces/*.champsimtrace.xz`
-- Results: `results/<workload>/sim.txt` and `results/<workload>/sim.err`
+- Traces: `traces/<workload>/<workload>_n=<N>.champsimtrace.xz` (plus `latest.champsimtrace` symlink)
+- Results: `results/<workload>_<N>/sim.txt` and `sim.err`
 
 3) Analyze
 
@@ -118,7 +134,7 @@ Open `notebooks/analysis.ipynb`.
 
 ## Tracing workflow (end-to-end)
 
-1) Set env
+1) Set env (loads `PIN_ROOT` if present)
 ```bash
 source scripts/env.sh
 ```
@@ -133,22 +149,40 @@ bash scripts/install_pin.sh
 bash scripts/build_champsim_tracer.sh
 ```
 
-4) Build workloads (array + linked list)
+4) Build workloads (trace + non-trace)
 ```bash
 bash scripts/build_workloads.sh
-# (if needed) copy to build/bin for the tracing script
-mkdir -p build/bin && cp -v bin/* build/bin/
 ```
 
 5) Generate traces with PIN + ChampSim tracer
 ```bash
-# builds tracing binaries (with -DTRACING) if missing and traces all four workloads
-bash scripts/gen_traces.sh --n 100000 --compress
+bash scripts/gen_traces.sh --include-stack   # add --stack-only or --regen-traces as needed
+```
+
+6) Run ChampSim on existing traces (no PIN)
+```bash
+bash scripts/run_traces.sh --include-stack --run-metrics
+```
+
+7) Run native binaries (wall-clock)
+```bash
+bash scripts/run_native.sh --include-stack
 ```
 
 Artifacts
 - Traces: `traces/<bench>/<bench>_n=<N>.champsimtrace[.xz]` (+ `latest.champsimtrace` symlink)
 - Trace logs: `results/traces/<bench>/*.out|*.err`
+- Simulation outputs: `results/<bench>_<N>/sim.txt|sim.err`
+- Native outputs: `results/non-trace/<bench>_<N>/run.txt|run.err`
+
+### Rerun ChampSim only (new budgets, no retrace)
+
+1. Edit `config/workloads.conf` to change `CHAMPSIM_WARMUP_INSTRUCTIONS`, `CHAMPSIM_SIM_INSTRUCTIONS`, or per-workload overrides (`warmup_<w>`, `sim_<w>`).
+2. Reuse existing traces by running:
+	```bash
+	./scripts/run_traces.sh --include-stack --run-metrics
+	```
+	(add `--stack-only` if desired). This does not rebuild workloads, rebuild ChampSim, or regenerate traces.
 
 ## Troubleshooting (common issues)
 

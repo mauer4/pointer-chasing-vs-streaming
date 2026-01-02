@@ -10,6 +10,7 @@ WORKLOAD_BIN_DIR="${ROOT_DIR}/bin"
 TRACE_ROOT="${ROOT_DIR}/traces"
 LOG_ROOT="${ROOT_DIR}/results/traces"
 CONFIG_FILE="${CONFIG_FILE:-${ROOT_DIR}/config/workloads.conf}"
+REGEN_TRACES="${REGEN_TRACES:-0}"
 
 STACK_ONLY="${STACK_ONLY:-0}"
 INCLUDE_STACK="${INCLUDE_STACK:-0}"
@@ -37,7 +38,8 @@ Usage: $0 [--n N] [--compress] [--trace-bin SUFFIX] [--dry-run]
   --trace-bin SUFFIX Suffix for binary (default: _trace)
   --dry-run          Print commands only
   --stack-only       Trace only workloads marked stack_<w>=1
-  --include-stack    Trace both heap and stack workloads (default)
+  --include-stack    Trace both heap and stack workloads
+  --regen-traces     Force regeneration even if traces already exist
 EOF
 }
 
@@ -56,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRYRUN=1; shift;;
     --stack-only) STACK_ONLY=1; shift;;
     --include-stack) INCLUDE_STACK=1; shift;;
+    --regen-traces) REGEN_TRACES=1; shift;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown arg: $1" >&2; usage; exit 1;;
   esac
@@ -97,6 +100,21 @@ run_one() {
   local trace_path="${out_dir}/${fname}"
   local trace_path_xz="${trace_path}.xz"
   local latest_link="${out_dir}/latest.champsimtrace"
+
+  # Reuse existing traces unless regeneration is forced
+  if [[ "${REGEN_TRACES}" -ne 1 ]]; then
+    if [[ -f "${trace_path_xz}" ]]; then
+      ln -sfn "$(basename "${trace_path_xz}")" "${latest_link}"
+      echo "[trace] ${name}: reusing existing compressed trace $(basename "${trace_path_xz}")"
+      return 0
+    elif [[ -f "${trace_path}" ]]; then
+      ln -sfn "$(basename "${trace_path}")" "${latest_link}"
+      echo "[trace] ${name}: reusing existing trace $(basename "${trace_path}")"
+      return 0
+    fi
+  else
+    rm -f "${trace_path}" "${trace_path_xz}"
+  fi
 
   # -s 0: skip 0 instructions
   # -t N: take N instructions

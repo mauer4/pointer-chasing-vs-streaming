@@ -3,16 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHAMPSIM_DIR="$ROOT_DIR/third_party/champsim"
-BIN_DIR="$ROOT_DIR/bin"
 TRACE_DIR="$ROOT_DIR/traces"
 RESULTS_DIR="$ROOT_DIR/results"
 CONFIG_FILE="${CONFIG_FILE:-$ROOT_DIR/config/workloads.conf}"
 
 RUN_METRICS="${RUN_METRICS:-0}"
-TRACE_BIN_SUFFIX="${TRACE_BIN_SUFFIX:-_trace}"
-REGEN_TRACES="${REGEN_TRACES:-0}"
-
-WORKLOAD_N="${WORKLOAD_N:-100000}" # backward compat; per-workload n_* overrides
 INCLUDE_STACK="${INCLUDE_STACK:-0}"
 STACK_ONLY="${STACK_ONLY:-0}"
 
@@ -20,73 +15,43 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [--include-stack] [--stack-only] [--run-metrics]
 
+Run ChampSim simulations using existing traces (no trace generation).
+
 Options:
-  --include-stack   Also trace and run the stack-based workloads (array_add_stack, list_add_stack).
-                    You can also set INCLUDE_STACK=1 in the environment.
-  --stack-only      Run only the stack-based workloads (implies --include-stack). You can also set STACK_ONLY=1.
-  --run-metrics     Run analysis/generate_metrics.py after simulations. You can also set RUN_METRICS=1.
-  --regen-traces    Force regeneration of traces even if existing compressed traces are present. REGEN_TRACES=1.
+  --include-stack   Include stack workloads in addition to heap (array/list).
+  --stack-only      Only run stack workloads (implies --include-stack).
+  --run-metrics     Run analysis/generate_metrics.py after simulations.
   -h, --help        Show this help.
+
+Environment overrides:
+  CONFIG_FILE=/path/to/workloads.conf
+  INCLUDE_STACK=1 STACK_ONLY=1 RUN_METRICS=1
 EOF
 }
 
 for arg in "$@"; do
   case "$arg" in
-    --include-stack)
-      INCLUDE_STACK=1
-      ;;
-    --stack-only)
-      STACK_ONLY=1
-      INCLUDE_STACK=1
-      ;;
-    --run-metrics)
-      RUN_METRICS=1
-      ;;
-    --regen-traces)
-      REGEN_TRACES=1
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "[run] Unknown argument: $arg"
-      usage
-      exit 2
-      ;;
+    --include-stack) INCLUDE_STACK=1 ;;
+    --stack-only) STACK_ONLY=1; INCLUDE_STACK=1 ;;
+    --run-metrics) RUN_METRICS=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "[run_traces] Unknown argument: $arg" >&2; usage; exit 2 ;;
   esac
 done
-
-mkdir -p "$TRACE_DIR" "$RESULTS_DIR"
-
-build_trace_bin() {
-  local w="$1"
-  local src="$ROOT_DIR/src/${w}.c"
-  local out="$BIN_DIR/${w}${TRACE_BIN_SUFFIX}"
-  if [[ -x "$out" ]]; then
-    echo "[trace-bin] Reusing existing trace binary: $out"
-  else
-    echo "[trace-bin] Building trace binary: $out"
-    cc -O2 -std=c11 -Wall -Wextra -pedantic -DTRACING -o "$out" "$src"
-  fi
-  echo "$out"
-}
 
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
 
+DEFAULT_WARMUP="${CHAMPSIM_WARMUP_INSTRUCTIONS:-500000}"
+DEFAULT_SIM="${CHAMPSIM_SIM_INSTRUCTIONS:-40000000}"
+DEFAULT_N="${WORKLOAD_N:-100000}"
+
 if [[ ! -d "$CHAMPSIM_DIR" ]]; then
-  echo "[run] ChampSim not found at $CHAMPSIM_DIR"
-  echo "[run] Run: scripts/setup.sh"
+  echo "[run_traces] ChampSim not found at $CHAMPSIM_DIR"
+  echo "[run_traces] Run: scripts/setup.sh"
   exit 1
 fi
 
-# 1) Build workloads
-"$ROOT_DIR/scripts/build_workloads.sh"
-
-# 2) Locate ChampSim binary
-# Build scripts typically create something like: bin/champsim
-# We'll search for an executable named champsim.
 CHAMPSIM_BIN=""
 if [[ -x "$CHAMPSIM_DIR/bin/champsim" ]]; then
   CHAMPSIM_BIN="$CHAMPSIM_DIR/bin/champsim"
@@ -95,109 +60,32 @@ else
 fi
 
 if [[ -z "$CHAMPSIM_BIN" ]]; then
-  echo "[run] Could not find ChampSim executable. Did build succeed?"
-  echo "[run] Look under $CHAMPSIM_DIR"
+  echo "[run_traces] Could not find ChampSim executable. Did build succeed?"
   exit 1
 fi
 
-echo "[run] Using ChampSim: $CHAMPSIM_BIN"
-
-# 3) Trace generation
-# ChampSim ships an Intel PIN tracer under tracer/pin.
-# We support three modes:
-# - If a trace already exists in traces/, we reuse it.
-# - If PIN_ROOT is set and points to a built PIN distribution, we build+use the tracer.
-# - Otherwise, we fail with clear instructions.
-
-gen_trace() {
-  local workload_name="$1"
-  local exe="$2"
-  local trace_out="$3"
-
-  local trace_out_xz="${trace_out}.xz"
-
-  if [[ "$REGEN_TRACES" -eq 1 ]]; then
-    rm -f "$trace_out" "$trace_out_xz"
-  fi
-
-  if [[ -f "$trace_out" || -f "$trace_out_xz" ]]; then
-    if [[ "$REGEN_TRACES" -ne 1 ]]; then
-      if [[ -f "$trace_out_xz" ]]; then
-        echo "[trace] Reusing existing compressed trace: $trace_out_xz"
-      else
-        echo "[trace] Reusing existing trace: $trace_out"
-      fi
-      return 0
-    fi
-  fi
-
-
-  if [[ -z "${PIN_ROOT:-}" ]]; then
-    echo "[trace] Missing PIN_ROOT; cannot generate traces automatically."
-    echo "[trace] ChampSim provides a PIN tracer at: $CHAMPSIM_DIR/tracer/pin"
-    echo "[trace] Options:"
-    echo "        1) Provide PIN_ROOT (path to an Intel PIN distribution) and re-run."
-    echo "        2) OR place a compatible trace at: $trace_out (or $trace_out_xz)"
-    return 2
-  fi
-
-  if [[ ! -x "$PIN_ROOT/pin" ]]; then
-    echo "[trace] PIN_ROOT is set but '$PIN_ROOT/pin' is not executable."
-    echo "[trace] PIN_ROOT should point at the root of the PIN distribution."
-    return 2
-  fi
-
-  local pin_tracer_dir="$CHAMPSIM_DIR/tracer/pin"
-  local tracer_so="$pin_tracer_dir/obj-intel64/champsim_tracer.so"
-
-  echo "[trace] Building PIN tracer (if needed): $pin_tracer_dir"
-  make -C "$pin_tracer_dir" >/dev/null
-
-  if [[ ! -f "$tracer_so" ]]; then
-    echo "[trace] Expected tracer .so was not produced: $tracer_so"
-    return 3
-  fi
-
-  echo "[trace] Generating trace for $workload_name (n=$WORKLOAD_N): $trace_out"
-  "$PIN_ROOT/pin" -t "$tracer_so" -o "$trace_out" -- "$exe" "$WORKLOAD_N"
-
-  if [[ ! -f "$trace_out" ]]; then
-    echo "[trace] Trace generation failed; output not found: $trace_out"
-    return 3
-  fi
-
-  # Compress to save space; ChampSim can read .xz directly.
-  xz -T0 -f "$trace_out"
-  if [[ ! -f "$trace_out_xz" ]]; then
-    echo "[trace] Compression failed; expected: $trace_out_xz"
-    return 3
-  fi
-  echo "[trace] Wrote: $trace_out_xz"
-}
+mkdir -p "$TRACE_DIR" "$RESULTS_DIR"
 
 trace_for_workload() {
   local w="$1" n="$2"
   echo "$TRACE_DIR/${w}/${w}_n=${n}.champsimtrace"
 }
 
-# 4) Run ChampSim
 run_sim() {
-  local workload_name="$1"
-  local trace_in="$2"
-  local warmup="$3"
-  local sim="$4"
-
-  local out_dir="$RESULTS_DIR/${workload_name}"
+  local workload_name="$1" n_val="$2" trace_in="$3" warmup="$4" sim="$5"
+  local out_dir="$RESULTS_DIR/${workload_name}_${n_val}"
   mkdir -p "$out_dir"
 
-  echo "[sim] Running $workload_name on trace $trace_in (warmup=$warmup sim=$sim)"
-  "$CHAMPSIM_BIN" --warmup-instructions "$warmup" --simulation-instructions "$sim" "$trace_in" >"$out_dir/sim.txt" 2>"$out_dir/sim.err" || true
-  echo "[sim] Output: $out_dir/sim.txt"
+  echo "[sim] ${workload_name}_${n_val}: trace=$trace_in warmup=$warmup sim=$sim"
+  if ! "$CHAMPSIM_BIN" --warmup-instructions "$warmup" --simulation-instructions "$sim" "$trace_in" >"$out_dir/sim.txt" 2>"$out_dir/sim.err"; then
+    echo "[sim] ${workload_name}_${n_val}: ChampSim exited with error (see $out_dir/sim.err)" >&2
+    return 1
+  fi
+  return 0
 }
 
-# Iterate workloads from config
 set +e
-TRACE_ERRORS=0
+EXIT_CODE=0
 for w in "${WORKLOADS[@]}"; do
   eval "STACK_FLAG=\${stack_${w}:-0}"
   if [[ "$STACK_ONLY" -eq 1 && "$STACK_FLAG" -ne 1 ]]; then
@@ -207,41 +95,26 @@ for w in "${WORKLOADS[@]}"; do
     continue
   fi
 
-  eval "N_W=\${n_${w}:-${WORKLOAD_N}}"
-  eval "WARMUP_W=\${warmup_${w}:-${CHAMPSIM_WARMUP_INSTRUCTIONS:-500000}}"
-  eval "SIM_W=\${sim_${w}:-${CHAMPSIM_SIM_INSTRUCTIONS:-40000000}}"
+  eval "N_W=\${n_${w}:-${DEFAULT_N}}"
+  eval "WARMUP_W=\${warmup_${w}:-${DEFAULT_WARMUP}}"
+  eval "SIM_W=\${sim_${w}:-${DEFAULT_SIM}}"
 
   trace_base="$(trace_for_workload "$w" "$N_W")"
-
-  # Build tracing binary (if missing) and ensure trace exists; with REGEN_TRACES=1 we
-  # will regenerate even if a compressed trace exists.
-  trace_bin="$(build_trace_bin "$w")"
-
-  gen_trace "$w" "$trace_bin" "$trace_base"
-  rc=$?
-  if [[ $rc -ne 0 ]]; then
-    TRACE_ERRORS=1
-    continue
-  fi
-
-  # Prefer compressed trace, fall back to uncompressed
   if [[ -f "${trace_base}.xz" ]]; then
     trace_path="${trace_base}.xz"
   elif [[ -f "$trace_base" ]]; then
     trace_path="$trace_base"
   else
-    echo "[run] Expected trace not found after generation: ${trace_base}[.xz]" >&2
-    TRACE_ERRORS=1
+    echo "[run_traces] Missing trace for $w n=$N_W at ${trace_base}[.xz]. Run scripts/gen_traces.sh first." >&2
+    EXIT_CODE=1
     continue
   fi
 
-  run_sim "${w}_${N_W}" "$trace_path" "$WARMUP_W" "$SIM_W"
+  if ! run_sim "$w" "$N_W" "$trace_path" "$WARMUP_W" "$SIM_W"; then
+    EXIT_CODE=1
+  fi
 done
 set -e
-
-if [[ $TRACE_ERRORS -ne 0 ]]; then
-  echo "[run] Some traces missing or failed; see logs above."
-fi
 
 if [[ "$RUN_METRICS" -eq 1 ]]; then
   METRICS_SCRIPT="$ROOT_DIR/analysis/generate_metrics.py"
@@ -253,4 +126,10 @@ if [[ "$RUN_METRICS" -eq 1 ]]; then
   fi
 fi
 
-echo "[run] Done. Results are under results/ (ignored by git)."
+if [[ $EXIT_CODE -ne 0 ]]; then
+  echo "[run_traces] Completed with errors."
+else
+  echo "[run_traces] Done. Results under $RESULTS_DIR/"
+fi
+
+exit $EXIT_CODE
