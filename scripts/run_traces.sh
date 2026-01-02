@@ -9,6 +9,7 @@ RESULTS_DIR="$ROOT_DIR/results"
 CONFIG_FILE="${CONFIG_FILE:-$ROOT_DIR/config/workloads.conf}"
 
 RUN_METRICS="${RUN_METRICS:-0}"
+TRACE_BIN_SUFFIX="${TRACE_BIN_SUFFIX:-_trace}"
 
 WORKLOAD_N="${WORKLOAD_N:-100000}" # backward compat; per-workload n_* overrides
 INCLUDE_STACK="${INCLUDE_STACK:-0}"
@@ -52,6 +53,16 @@ for arg in "$@"; do
 done
 
 mkdir -p "$TRACE_DIR" "$RESULTS_DIR"
+
+build_trace_bin() {
+  local w="$1"
+  local src="$ROOT_DIR/src/${w}.c"
+  local out="$BIN_DIR/${w}${TRACE_BIN_SUFFIX}"
+  if [[ ! -x "$out" ]]; then
+    cc -O2 -std=c11 -Wall -Wextra -pedantic -DTRACING -o "$out" "$src"
+  fi
+  echo "$out"
+}
 
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
@@ -200,7 +211,9 @@ for w in "${WORKLOADS[@]}"; do
   fi
 
   # Attempt trace generation (best-effort)
-  gen_trace "$w" "$BIN_DIR/$w" "$trace_base"
+  trace_bin="$(build_trace_bin "$w")"
+
+  gen_trace "$w" "$trace_bin" "$trace_base"
   rc=$?
   if [[ $rc -eq 0 ]]; then
     if [[ -f "${trace_base}.xz" ]]; then
