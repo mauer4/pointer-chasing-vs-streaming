@@ -57,6 +57,8 @@ This produces:
 ./scripts/run_traces.sh                     # heap workloads only (default)
 ./scripts/run_traces.sh --include-stack     # include stack workloads too
 ./scripts/run_traces.sh --stack-only        # stack workloads only
+# run and then auto-generate metrics report
+./scripts/run_traces.sh --run-metrics
 # env equivalents: INCLUDE_STACK=1 ./scripts/run_traces.sh, STACK_ONLY=1 ./scripts/run_traces.sh
 ```
 

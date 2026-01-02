@@ -8,18 +8,21 @@ TRACE_DIR="$ROOT_DIR/traces"
 RESULTS_DIR="$ROOT_DIR/results"
 CONFIG_FILE="${CONFIG_FILE:-$ROOT_DIR/config/workloads.conf}"
 
+RUN_METRICS="${RUN_METRICS:-0}"
+
 WORKLOAD_N="${WORKLOAD_N:-100000}" # backward compat; per-workload n_* overrides
 INCLUDE_STACK="${INCLUDE_STACK:-0}"
 STACK_ONLY="${STACK_ONLY:-0}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--include-stack] [--stack-only]
+Usage: $(basename "$0") [--include-stack] [--stack-only] [--run-metrics]
 
 Options:
   --include-stack   Also trace and run the stack-based workloads (array_add_stack, list_add_stack).
                     You can also set INCLUDE_STACK=1 in the environment.
   --stack-only      Run only the stack-based workloads (implies --include-stack). You can also set STACK_ONLY=1.
+  --run-metrics     Run analysis/generate_metrics.py after simulations. You can also set RUN_METRICS=1.
   -h, --help        Show this help.
 EOF
 }
@@ -32,6 +35,9 @@ for arg in "$@"; do
     --stack-only)
       STACK_ONLY=1
       INCLUDE_STACK=1
+      ;;
+    --run-metrics)
+      RUN_METRICS=1
       ;;
     -h|--help)
       usage
@@ -213,6 +219,16 @@ set -e
 
 if [[ $TRACE_ERRORS -ne 0 ]]; then
   echo "[run] Some traces missing or failed; see logs above."
+fi
+
+if [[ "$RUN_METRICS" -eq 1 ]]; then
+  METRICS_SCRIPT="$ROOT_DIR/analysis/generate_metrics.py"
+  if [[ -x "$METRICS_SCRIPT" || -f "$METRICS_SCRIPT" ]]; then
+    echo "[metrics] Running $METRICS_SCRIPT"
+    python "$METRICS_SCRIPT" || echo "[metrics] Metrics script exited with an error"
+  else
+    echo "[metrics] Metrics script not found at $METRICS_SCRIPT"
+  fi
 fi
 
 echo "[run] Done. Results are under results/ (ignored by git)."
