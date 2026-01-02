@@ -5,7 +5,7 @@
 | workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses |
 |---|---:|---:|---:|---:|
 | array_add | 3.192 | 49.59% | 50.41% | 73144 |
-| list_add | 1.111 | 98.53% | 1.47% | 485256 |
+| list_add | 1.111 | 98.53% | 1.47% | 485253 |
 
 **Speedup (array / list):** 2.873
 

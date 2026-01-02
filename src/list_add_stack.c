@@ -53,6 +53,19 @@ int main(int argc, char** argv) {
     volatile int64_t sum = 0;
 
 #ifndef TRACING
+    // Contiguity check for stack-resident nodes: indices are contiguous by construction,
+    // but verify the underlying addresses are spaced by sizeof(node_t).
+    size_t node_size = sizeof(node_t);
+    size_t adjacent = 0;
+    size_t links = 0;
+    for (int i = 0; i + 1 < n; i++) {
+        links++;
+        uintptr_t cur = (uintptr_t)&nodes[i];
+        uintptr_t nxt = (uintptr_t)&nodes[i + 1];
+        if (cur + node_size == nxt) adjacent++;
+    }
+    double adjacent_ratio = links ? (double)adjacent / (double)links : 0.0;
+
     uint64_t t0 = now_ns();
 #endif
 
@@ -66,7 +79,9 @@ int main(int argc, char** argv) {
 
 #ifndef TRACING
     uint64_t t1 = now_ns();
-    printf("workload=list_add_stack n=%d sum=%lld time_ns=%llu\n", n, (long long)sum, (unsigned long long)(t1 - t0));
+    printf("workload=list_add_stack n=%d sum=%lld time_ns=%llu node_size=%zu contiguous_links=%zu/%zu (%.2f%%)\n",
+           n, (long long)sum, (unsigned long long)(t1 - t0), node_size, adjacent, links,
+           adjacent_ratio * 100.0);
 #endif
 
     return 0;

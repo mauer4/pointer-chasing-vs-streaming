@@ -45,22 +45,34 @@ static int parse_n(int argc, char** argv) {
 int main(int argc, char** argv) {
     int n = parse_n(argc, argv);
 
-    // Allocate nodes.
-    Node* head = NULL;
-    for (int i = n - 1; i >= 0; i--) {
-        Node* node = (Node*)malloc(sizeof(Node));
-        if (!node) {
-            perror("malloc");
-            return 1;
-        }
-        node->value = (int32_t)(i % 1024);
-        node->next = head;
-        head = node;
+    // Allocate nodes contiguously in one block.
+    Node* nodes = (Node*)malloc((size_t)n * sizeof(Node));
+    if (!nodes) {
+        perror("malloc");
+        return 1;
     }
+    for (int i = 0; i < n; i++) {
+        nodes[i].value = (int32_t)(i % 1024);
+        nodes[i].next = (i + 1 < n) ? &nodes[i + 1] : NULL;
+    }
+    Node* head = &nodes[0];
 
     volatile int64_t sum = 0;
 
 #ifndef TRACING
+    // Quick contiguity check (heap list): walk the list once and count adjacent nodes
+    // that are exactly one sizeof(Node) apart in virtual address space.
+    size_t node_size = sizeof(Node);
+    size_t adjacent = 0;
+    size_t links = 0;
+    for (Node* p = head; p && p->next; p = p->next) {
+        links++;
+        uintptr_t cur = (uintptr_t)p;
+        uintptr_t nxt = (uintptr_t)p->next;
+        if (cur + node_size == nxt) adjacent++;
+    }
+    double adjacent_ratio = links ? (double)adjacent / (double)links : 0.0;
+
     uint64_t t0 = now_ns();
 #endif
 
@@ -74,16 +86,13 @@ int main(int argc, char** argv) {
 
 #ifndef TRACING
     uint64_t t1 = now_ns();
-    printf("workload=list_add n=%d sum=%lld time_ns=%llu\n", n, (long long)sum, (unsigned long long)(t1 - t0));
+    printf("workload=list_add n=%d sum=%lld time_ns=%llu node_size=%zu contiguous_links=%zu/%zu (%.2f%%)\n",
+           n, (long long)sum, (unsigned long long)(t1 - t0), node_size, adjacent, links,
+           adjacent_ratio * 100.0);
 #endif
 
-    // Free
-    cur = head;
-    while (cur) {
-        Node* next = cur->next;
-        free(cur);
-        cur = next;
-    }
+    // Free contiguous block
+    free(nodes);
 
     return 0;
 }
