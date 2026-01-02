@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Generate IPC and L1D metrics tables for array vs list (heap and stack).
+"""Generate IPC, cache, and MSHR metrics tables for array vs list (heap and stack).
 
-Reads per-workload settings from config/workloads.conf, pulls IPC and L1D LOAD
-hit/miss counts from results/<workload>_<N>/sim.txt, computes hit/miss rates and
-array-vs-list speedup, and writes a Markdown report to analysis/metrics/report.md.
+Reads per-workload settings from config/workloads.conf, pulls IPC and L1D/LLC LOAD
+hit/miss counts (plus L1D MSHR merges when present) from results/<workload>_<N>/sim.txt,
+computes hit/miss rates and array-vs-list speedup, and writes a Markdown report to
+analysis/metrics/report.md.
 
 Usage:
   python analysis/generate_metrics.py [--heap-only] [--stack-only]
@@ -23,6 +24,7 @@ from typing import Dict, Optional, Tuple
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config" / "workloads.conf"
 RESULTS_DIR = ROOT / "results"
+NONTRACE_RESULTS_DIR = RESULTS_DIR / "non-trace"
 OUTPUT_DIR = ROOT / "analysis" / "metrics"
 OUTPUT_FILE = OUTPUT_DIR / "report.md"
 
@@ -61,6 +63,15 @@ def parse_sim_metrics(sim_path: Path) -> Optional[Dict[str, float]]:
         r"cpu0->cpu0_L1D\s+LOAD\s+ACCESS:\s*([0-9]+)\s+HIT:\s*([0-9]+)\s+MISS:\s*([0-9]+)",
         text,
     )
+    llc_match = re.search(
+        r"cpu0->LLC(?:\s+CACHE)?\s+LOAD\s+ACCESS:\s*([0-9]+)\s+HIT:\s*([0-9]+)\s+MISS:\s*([0-9]+)",
+        text,
+    )
+    mshr_match = re.search(
+        r"cpu0->cpu0_L1D\s+LOAD\s+ACCESS:\s*[0-9]+\s+HIT:\s*[0-9]+\s+MISS:\s*[0-9]+\s+MSHR_MERGE:\s*([0-9]+)",
+        text,
+    )
+
     if not ipc_match or not l1d_match:
         return None
 
@@ -70,7 +81,7 @@ def parse_sim_metrics(sim_path: Path) -> Optional[Dict[str, float]]:
     hit_rate = hit / access if access else 0.0
     miss_rate = miss / access if access else 0.0
 
-    return {
+    metrics: Dict[str, float] = {
         "ipc": float(ipc_match.group(1)),
         "l1d_access": float(access),
         "l1d_hit": float(hit),
@@ -78,6 +89,37 @@ def parse_sim_metrics(sim_path: Path) -> Optional[Dict[str, float]]:
         "l1d_hit_rate": hit_rate,
         "l1d_miss_rate": miss_rate,
     }
+
+    if llc_match:
+        llc_access = int(llc_match.group(1))
+        llc_hit = int(llc_match.group(2))
+        llc_miss = int(llc_match.group(3))
+        metrics.update(
+            {
+                "llc_access": float(llc_access),
+                "llc_hit": float(llc_hit),
+                "llc_miss": float(llc_miss),
+                "llc_hit_rate": llc_hit / llc_access if llc_access else 0.0,
+                "llc_miss_rate": llc_miss / llc_access if llc_access else 0.0,
+            }
+        )
+
+    if mshr_match:
+        metrics["l1d_load_mshr_merge"] = float(mshr_match.group(1))
+
+    return metrics
+
+
+def parse_runtime(runtime_path: Path) -> Optional[float]:
+    """Return runtime in milliseconds from a run.txt file."""
+    if not runtime_path.is_file():
+        return None
+    text = runtime_path.read_text()
+    m = re.search(r"time_ns=([0-9]+)", text)
+    if not m:
+        return None
+    ns = int(m.group(1))
+    return ns / 1e6  # ms
 
 
 def workload_n(kv: Dict[str, str], name: str, fallback: str) -> str:
@@ -92,19 +134,49 @@ def sim_file_for(workload: str, n: str) -> Path:
     return RESULTS_DIR / f"{workload}_{n}" / "sim.txt"
 
 
+def runtime_file_for(workload: str, n: str) -> Path:
+    return NONTRACE_RESULTS_DIR / f"{workload}_{n}" / "run.txt"
+
+
 def render_table(title: str, rows: list[dict], speedup: Optional[float]) -> str:
     if not rows:
         return f"### {title}\n\n_No data found._\n\n"
-    header = "| workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses |\n"
-    sep = "|---|---:|---:|---:|---:|\n"
+    header = "| workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses | LLC load hit rate | LLC load miss rate | L1D load MSHR merges |\n"
+    sep = "|---|---:|---:|---:|---:|---:|---:|---:|\n"
     body_lines = []
     for r in rows:
+        llc_hit_rate = r.get("llc_hit_rate")
+        llc_miss_rate = r.get("llc_miss_rate")
+        l1d_mshr = r.get("l1d_load_mshr_merge")
         body_lines.append(
-            f"| {r['name']} | {r['ipc']:.3f} | {r['l1d_hit_rate']*100:.2f}% | {r['l1d_miss_rate']*100:.2f}% | {int(r['l1d_access'])} |"
+            "| {name} | {ipc:.3f} | {l1h:.2f}% | {l1m:.2f}% | {l1a} | {llch} | {llcm} | {mshr} |".format(
+                name=r["name"],
+                ipc=r["ipc"],
+                l1h=r["l1d_hit_rate"] * 100,
+                l1m=r["l1d_miss_rate"] * 100,
+                l1a=int(r["l1d_access"]),
+                llch=(f"{llc_hit_rate*100:.2f}%" if llc_hit_rate is not None else "-"),
+                llcm=(f"{llc_miss_rate*100:.2f}%" if llc_miss_rate is not None else "-"),
+                mshr=(f"{int(l1d_mshr)}" if l1d_mshr is not None else "-"),
+            )
         )
     table = "### " + title + "\n\n" + header + sep + "\n".join(body_lines) + "\n\n"
     if speedup is not None:
-        table += f"**Speedup (array / list):** {speedup:.3f}\n\n"
+        table += f"**IPC speedup (array / list):** {speedup:.3f}\n\n"
+    return table
+
+
+def render_runtime_table(title: str, rows: list[dict], speedup: Optional[float]) -> str:
+    if not rows:
+        return ""
+    header = "| workload | runtime (ms) |\n"
+    sep = "|---|---:|\n"
+    body_lines = []
+    for r in rows:
+        body_lines.append(f"| {r['name']} | {r['runtime_ms']:.3f} |")
+    table = "### " + title + " wall-clock\n\n" + header + sep + "\n".join(body_lines) + "\n\n"
+    if speedup is not None:
+        table += f"**Wall-clock speedup (array / list):** {speedup:.3f}\n\n"
     return table
 
 
@@ -153,16 +225,31 @@ def main() -> None:
         arr_metrics = parse_sim_metrics(sim_file_for(arr_w, arr_n))
         list_metrics = parse_sim_metrics(sim_file_for(list_w, list_n))
 
-        rows = []
-        speedup = None
+        metric_rows: list[dict] = []
+        ipc_speedup = None
         if arr_metrics:
-            rows.append({"name": arr_w, **arr_metrics})
+            metric_rows.append({"name": arr_w, **arr_metrics})
         if list_metrics:
-            rows.append({"name": list_w, **list_metrics})
+            metric_rows.append({"name": list_w, **list_metrics})
         if arr_metrics and list_metrics:
-            speedup = arr_metrics["ipc"] / list_metrics["ipc"] if list_metrics["ipc"] else None
+            ipc_speedup = arr_metrics["ipc"] / list_metrics["ipc"] if list_metrics["ipc"] else None
 
-        sections.append(render_table(title, rows, speedup))
+        arr_runtime = parse_runtime(runtime_file_for(arr_w, arr_n))
+        list_runtime = parse_runtime(runtime_file_for(list_w, list_n))
+        runtime_rows: list[dict] = []
+        wall_speedup = None
+        if arr_runtime is not None:
+            runtime_rows.append({"name": arr_w, "runtime_ms": arr_runtime})
+        if list_runtime is not None:
+            runtime_rows.append({"name": list_w, "runtime_ms": list_runtime})
+        if arr_runtime is not None and list_runtime is not None:
+            wall_speedup = list_runtime / arr_runtime if arr_runtime else None
+
+        section_parts = [render_table(title, metric_rows, ipc_speedup)]
+        runtime_table = render_runtime_table(title, runtime_rows, wall_speedup)
+        if runtime_table:
+            section_parts.append(runtime_table)
+        sections.append("\n".join(section_parts))
 
     if not sections:
         OUTPUT_FILE.write_text("No data found. Ensure traces/runs are present in results/.\n")

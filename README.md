@@ -60,6 +60,7 @@ This produces:
 # run and then auto-generate metrics report
 ./scripts/run_traces.sh --run-metrics
 # env equivalents: INCLUDE_STACK=1 ./scripts/run_traces.sh, STACK_ONLY=1 ./scripts/run_traces.sh
+./scripts/run_native.sh                     # run non-tracing binaries and capture stdout to results/non-trace/
 ```
 
 Traces are compressed by default (`.xz`). Both scripts will also accept uncompressed traces if you run `gen_traces.sh --no-compress`.
