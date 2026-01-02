@@ -1,9 +1,11 @@
 # Pointer chasing vs streaming (ChampSim)
 
-This repo sets up two tiny C workloads and runs them through ChampSim using instruction traces.
+This repo sets up four tiny C workloads (heap + stack variants) and runs them through ChampSim using instruction traces.
 
-- Workload A: streaming sum over an array
-- Workload B: pointer-chasing sum over a linked list
+- Workload A (heap): streaming sum over an array (`array_add`)
+- Workload B (heap): pointer-chasing sum over a linked list (`list_add`)
+- Workload C (stack): streaming sum over an array allocated on the stack (`array_add_stack`)
+- Workload D (stack): pointer-chasing sum over a stack-allocated list (`list_add_stack`)
 
 ## What’s intentionally **not** tracked in git
 
@@ -46,12 +48,28 @@ This produces:
 
 - `bin/array_add`
 - `bin/list_add`
+- `bin/array_add_stack`
+- `bin/list_add_stack`
 
 ### 3) Generate traces + run ChampSim
 
 ```bash
-./scripts/run_traces.sh
+./scripts/run_traces.sh                     # heap workloads only (default)
+./scripts/run_traces.sh --include-stack     # include stack workloads too
+./scripts/run_traces.sh --stack-only        # stack workloads only
+# env equivalents: INCLUDE_STACK=1 ./scripts/run_traces.sh, STACK_ONLY=1 ./scripts/run_traces.sh
 ```
+
+Traces are compressed by default (`.xz`). Both scripts will also accept uncompressed traces if you run `gen_traces.sh --no-compress`.
+
+### Workload config
+
+Workloads and their per-benchmark settings live in `config/workloads.conf`:
+
+- `WORKLOADS`: ordered list (e.g., `array_add list_add array_add_stack list_add_stack`)
+- Per-workload keys: `n_<name>`, `warmup_<name>`, `sim_<name>`, `stack_<name>` (1 for stack variant)
+
+Both `scripts/gen_traces.sh` and `scripts/run_traces.sh` read this file and honor `--stack-only` / `--include-stack` filtering. You can override `CONFIG_FILE` to point at a different config.
 
 ### Tracing prerequisites (Intel PIN)
 
@@ -72,7 +90,9 @@ You can control run sizes with:
 
 - `WORKLOAD_N` (default `100000`)
 - `CHAMPSIM_WARMUP_INSTRUCTIONS` (default `500000`)
-- `CHAMPSIM_SIM_INSTRUCTIONS` (default `2000000`)
+- `CHAMPSIM_SIM_INSTRUCTIONS` (default `20000000`)
+- `INCLUDE_STACK=1` (or `--include-stack`) to include the stack-based workloads in `run_traces.sh`
+- `STACK_ONLY=1` (or `--stack-only`) to run only the stack-based workloads (implies INCLUDE_STACK)
 
 Expected artifacts after a successful run:
 
@@ -109,6 +129,7 @@ mkdir -p build/bin && cp -v bin/* build/bin/
 
 5) Generate traces with PIN + ChampSim tracer
 ```bash
+# builds tracing binaries (with -DTRACING) if missing and traces all four workloads
 bash scripts/gen_traces.sh --n 100000 --compress
 ```
 

@@ -9,6 +9,10 @@ TRACER_SO="${TRACER_DIR}/obj-intel64/champsim_tracer.so"
 WORKLOAD_BIN_DIR="${ROOT_DIR}/bin"
 TRACE_ROOT="${ROOT_DIR}/traces"
 LOG_ROOT="${ROOT_DIR}/results/traces"
+CONFIG_FILE="${CONFIG_FILE:-${ROOT_DIR}/config/workloads.conf}"
+
+STACK_ONLY="${STACK_ONLY:-0}"
+INCLUDE_STACK="${INCLUDE_STACK:-0}"
 
 ARCH="$(uname -m)"; OS="$(uname -s)"
 if [[ "${OS}" != "Linux" || "${ARCH}" != "x86_64" ]]; then
@@ -27,25 +31,31 @@ PIN_BIN="${PIN_ROOT:-}/pin"
 usage() {
   cat <<EOF
 Usage: $0 [--n N] [--compress] [--trace-bin SUFFIX] [--dry-run]
-  --n N              Number of elements (default 4000000)
-  --compress         Compress traces with xz
-  --trace-bin SUFFIX Suffix for binary (e.g., _trace for array_add_trace)
+  --n N              Number of elements (default 100000)
+  --compress         Compress traces with xz (default: on)
+  --no-compress      Do not compress traces
+  --trace-bin SUFFIX Suffix for binary (default: _trace)
   --dry-run          Print commands only
+  --stack-only       Trace only workloads marked stack_<w>=1
+  --include-stack    Trace both heap and stack workloads (default)
 EOF
 }
 
-N=4000000
-COMPRESS=0
+N=100000
+COMPRESS=1
 DRYRUN=0
-BIN_SUFFIX=""
+BIN_SUFFIX="_trace"
 PIN_TRACE_TAKE=20000000 # 20M instructions
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --n) N="$2"; shift 2;;
     --compress) COMPRESS=1; shift;;
+  --no-compress) COMPRESS=0; shift;;
     --trace-bin) BIN_SUFFIX="$2"; shift 2;;
     --dry-run) DRYRUN=1; shift;;
+    --stack-only) STACK_ONLY=1; shift;;
+    --include-stack) INCLUDE_STACK=1; shift;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown arg: $1" >&2; usage; exit 1;;
   esac
@@ -61,14 +71,18 @@ if [[ ! -f "${TRACER_SO}" ]]; then
   exit 1
 fi
 
-ARRAY_BIN="${WORKLOAD_BIN_DIR}/array_add${BIN_SUFFIX}"
-LIST_BIN="${WORKLOAD_BIN_DIR}/list_add${BIN_SUFFIX}"
+build_trace_bin() {
+  local w="$1"
+  local src="${ROOT_DIR}/src/${w}.c"
+  local out="${WORKLOAD_BIN_DIR}/${w}${BIN_SUFFIX}"
+  if [[ ! -x "${out}" ]]; then
+    cc -O2 -std=c11 -Wall -Wextra -pedantic -DTRACING -o "${out}" "${src}"
+  fi
+  echo "${out}"
+}
 
-if [[ ! -x "${ARRAY_BIN}" || ! -x "${LIST_BIN}" ]]; then
-  echo "[trace] Workload binaries missing: ${ARRAY_BIN} or ${LIST_BIN}." >&2
-  echo "[trace] Run scripts/build_variants.sh." >&2
-  exit 1
-fi
+# shellcheck disable=SC1090
+source "${CONFIG_FILE}"
 
 mkdir -p "${TRACE_ROOT}" "${LOG_ROOT}"
 
@@ -109,5 +123,19 @@ run_one() {
   echo "[trace] ${name}: wrote $(basename "${trace_path}")"
 }
 
-run_one "array_add" "${ARRAY_BIN}"
-run_one "list_add" "${LIST_BIN}"
+for w in "${WORKLOADS[@]}"; do
+  eval "STACK_FLAG=\${stack_${w}:-0}"
+  # filtering
+  if [[ "${STACK_ONLY}" == "1" && "${STACK_FLAG}" != "1" ]]; then
+    continue
+  fi
+  if [[ "${STACK_ONLY}" != "1" && "${INCLUDE_STACK}" == "0" && "${STACK_FLAG}" == "1" ]]; then
+    continue
+  fi
+
+  eval "N_W=\${n_${w}:-${N}}"
+
+  N="${N_W}"  # override global N for this workload
+  bin_path="$(build_trace_bin "${w}")"
+  run_one "${w}" "${bin_path}"
+done

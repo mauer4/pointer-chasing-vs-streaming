@@ -6,10 +6,49 @@ CHAMPSIM_DIR="$ROOT_DIR/third_party/champsim"
 BIN_DIR="$ROOT_DIR/bin"
 TRACE_DIR="$ROOT_DIR/traces"
 RESULTS_DIR="$ROOT_DIR/results"
+CONFIG_FILE="${CONFIG_FILE:-$ROOT_DIR/config/workloads.conf}"
 
-WORKLOAD_N="${WORKLOAD_N:-100000}"
+WORKLOAD_N="${WORKLOAD_N:-100000}" # backward compat; per-workload n_* overrides
+INCLUDE_STACK="${INCLUDE_STACK:-0}"
+STACK_ONLY="${STACK_ONLY:-0}"
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [--include-stack] [--stack-only]
+
+Options:
+  --include-stack   Also trace and run the stack-based workloads (array_add_stack, list_add_stack).
+                    You can also set INCLUDE_STACK=1 in the environment.
+  --stack-only      Run only the stack-based workloads (implies --include-stack). You can also set STACK_ONLY=1.
+  -h, --help        Show this help.
+EOF
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --include-stack)
+      INCLUDE_STACK=1
+      ;;
+    --stack-only)
+      STACK_ONLY=1
+      INCLUDE_STACK=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "[run] Unknown argument: $arg"
+      usage
+      exit 2
+      ;;
+  esac
+done
 
 mkdir -p "$TRACE_DIR" "$RESULTS_DIR"
+
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
 
 if [[ ! -d "$CHAMPSIM_DIR" ]]; then
   echo "[run] ChampSim not found at $CHAMPSIM_DIR"
@@ -106,40 +145,74 @@ gen_trace() {
   echo "[trace] Wrote: $trace_out_xz"
 }
 
-ARRAY_TRACE="$TRACE_DIR/array_add_${WORKLOAD_N}.champsimtrace"
-LIST_TRACE="$TRACE_DIR/list_add_${WORKLOAD_N}.champsimtrace"
-
-# Attempt trace generation (best-effort)
-set +e
-gen_trace "array_add" "$BIN_DIR/array_add" "$ARRAY_TRACE"
-ARRAY_RC=$?
-gen_trace "list_add" "$BIN_DIR/list_add" "$LIST_TRACE"
-LIST_RC=$?
-set -e
-
-if [[ $ARRAY_RC -ne 0 || $LIST_RC -ne 0 ]]; then
-  echo "[run] Trace generation not completed for all workloads."
-  echo "[run] Once you have traces in $TRACE_DIR, this script will run ChampSim and write results to $RESULTS_DIR."
-  exit 4
-fi
+trace_for_workload() {
+  local w="$1" n="$2"
+  echo "$TRACE_DIR/${w}/${w}_n=${n}.champsimtrace"
+}
 
 # 4) Run ChampSim
 run_sim() {
   local workload_name="$1"
   local trace_in="$2"
-  local out_dir="$RESULTS_DIR/$workload_name"
+  local warmup="$3"
+  local sim="$4"
+
+  local out_dir="$RESULTS_DIR/${workload_name}"
   mkdir -p "$out_dir"
 
-  echo "[sim] Running $workload_name on trace $trace_in"
-  # Follow ChampSim README: pass the trace file as a positional argument.
-  # Use smaller instruction counts by default to keep runs snappy.
-  local warmup="${CHAMPSIM_WARMUP_INSTRUCTIONS:-500000}"
-  local sim="${CHAMPSIM_SIM_INSTRUCTIONS:-2000000}"
+  echo "[sim] Running $workload_name on trace $trace_in (warmup=$warmup sim=$sim)"
   "$CHAMPSIM_BIN" --warmup-instructions "$warmup" --simulation-instructions "$sim" "$trace_in" >"$out_dir/sim.txt" 2>"$out_dir/sim.err" || true
   echo "[sim] Output: $out_dir/sim.txt"
 }
 
-run_sim "array_add_${WORKLOAD_N}" "${ARRAY_TRACE}.xz"
-run_sim "list_add_${WORKLOAD_N}" "${LIST_TRACE}.xz"
+# Iterate workloads from config
+set +e
+TRACE_ERRORS=0
+for w in "${WORKLOADS[@]}"; do
+  eval "STACK_FLAG=\${stack_${w}:-0}"
+  if [[ "$STACK_ONLY" -eq 1 && "$STACK_FLAG" -ne 1 ]]; then
+    continue
+  fi
+  if [[ "$STACK_ONLY" -ne 1 && "$INCLUDE_STACK" -eq 0 && "$STACK_FLAG" -eq 1 ]]; then
+    continue
+  fi
+
+  eval "N_W=\${n_${w}:-${WORKLOAD_N}}"
+  eval "WARMUP_W=\${warmup_${w}:-${CHAMPSIM_WARMUP_INSTRUCTIONS:-500000}}"
+  eval "SIM_W=\${sim_${w}:-${CHAMPSIM_SIM_INSTRUCTIONS:-40000000}}"
+
+  trace_base="$(trace_for_workload "$w" "$N_W")"
+  trace_path="${trace_base}.xz"
+  if [[ ! -f "$trace_path" && -f "$trace_base" ]]; then
+    trace_path="$trace_base"
+  fi
+
+  if [[ ! -f "$trace_path" ]]; then
+    echo "[run] missing trace $trace_path (run scripts/gen_traces.sh)" >&2
+    TRACE_ERRORS=1
+    continue
+  fi
+
+  # Attempt trace generation (best-effort)
+  gen_trace "$w" "$BIN_DIR/$w" "$trace_base"
+  rc=$?
+  if [[ $rc -eq 0 ]]; then
+    if [[ -f "${trace_base}.xz" ]]; then
+      trace_path="${trace_base}.xz"
+    elif [[ -f "$trace_base" ]]; then
+      trace_path="$trace_base"
+    fi
+  else
+    TRACE_ERRORS=1
+    continue
+  fi
+
+  run_sim "${w}_${N_W}" "$trace_path" "$WARMUP_W" "$SIM_W"
+done
+set -e
+
+if [[ $TRACE_ERRORS -ne 0 ]]; then
+  echo "[run] Some traces missing or failed; see logs above."
+fi
 
 echo "[run] Done. Results are under results/ (ignored by git)."
