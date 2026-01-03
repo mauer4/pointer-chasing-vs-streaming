@@ -114,7 +114,7 @@ run_for_n() {
       N_W="${DEFAULT_N}"
     fi
 
-    local WARMUP_W SIM_W
+    local WARMUP_W="" SIM_W=""
 
     # Per-workload warmup list (aligned with N sweep index)
     eval "WARMUP_LIST_W=\${warmup_cycles_${w}_list:-}"
