@@ -6,22 +6,20 @@
 #include <time.h>
 
 #ifndef DEFAULT_N
-#define DEFAULT_N 4000000
+#define DEFAULT_N 100000
 #endif
 
-typedef struct Node {
+// Limit stack usage: 1e6 nodes ~ (16B) = ~16 MB; adjust as needed
+#define MAX_N 1000000
+
+typedef struct {
     int32_t value;
-    struct Node* next;
-} Node;
+    int32_t next; // index of next node, -1 for end
+} node_t;
 
 // ROI Markers
-__attribute__((noinline)) void champsim_roi_begin() {
-    __asm__ volatile("");
-}
-
-__attribute__((noinline)) void champsim_roi_end() {
-    __asm__ volatile("");
-}
+__attribute__((noinline)) void champsim_roi_begin() { __asm__ volatile(""); }
+__attribute__((noinline)) void champsim_roi_end()   { __asm__ volatile(""); }
 
 #ifndef TRACING
 static uint64_t now_ns(void) {
@@ -35,8 +33,8 @@ static int parse_n(int argc, char** argv) {
     if (argc < 2) return DEFAULT_N;
     long n = strtol(argv[1], NULL, 10);
     if (n <= 0) return DEFAULT_N;
-    if (n > 50000000) { // linked list is memory-heavy; keep guard tighter
-        fprintf(stderr, "N too large\n");
+    if (n > MAX_N) {
+        fprintf(stderr, "N too large for stack allocation (max %d)\n", MAX_N);
         exit(2);
     }
     return (int)n;
@@ -45,30 +43,25 @@ static int parse_n(int argc, char** argv) {
 int main(int argc, char** argv) {
     int n = parse_n(argc, argv);
 
-    // Allocate nodes contiguously in one block.
-    Node* nodes = (Node*)malloc((size_t)n * sizeof(Node));
-    if (!nodes) {
-        perror("malloc");
-        return 1;
-    }
+    node_t nodes[MAX_N];
+
     for (int i = 0; i < n; i++) {
         nodes[i].value = (int32_t)(i % 1024);
-        nodes[i].next = (i + 1 < n) ? &nodes[i + 1] : NULL;
+        nodes[i].next = (i + 1 < n) ? (i + 1) : -1;
     }
-    Node* head = &nodes[0];
 
     volatile int64_t sum = 0;
 
 #ifndef TRACING
-    // Quick contiguity check (heap list): walk the list once and count adjacent nodes
-    // that are exactly one sizeof(Node) apart in virtual address space.
-    size_t node_size = sizeof(Node);
+    // Contiguity check for stack-resident nodes: indices are contiguous by construction,
+    // but verify the underlying addresses are spaced by sizeof(node_t).
+    size_t node_size = sizeof(node_t);
     size_t adjacent = 0;
     size_t links = 0;
-    for (Node* p = head; p && p->next; p = p->next) {
+    for (int i = 0; i + 1 < n; i++) {
         links++;
-        uintptr_t cur = (uintptr_t)p;
-        uintptr_t nxt = (uintptr_t)p->next;
+        uintptr_t cur = (uintptr_t)&nodes[i];
+        uintptr_t nxt = (uintptr_t)&nodes[i + 1];
         if (cur + node_size == nxt) adjacent++;
     }
     double adjacent_ratio = links ? (double)adjacent / (double)links : 0.0;
@@ -77,22 +70,19 @@ int main(int argc, char** argv) {
 #endif
 
     champsim_roi_begin();
-    Node* cur = head;
-    while (cur) {
-        sum += cur->value;
-        cur = cur->next;
+    int cur = 0;
+    while (cur != -1) {
+        sum += nodes[cur].value;
+        cur = nodes[cur].next;
     }
     champsim_roi_end();
 
 #ifndef TRACING
     uint64_t t1 = now_ns();
-    printf("workload=list_add n=%d sum=%lld time_ns=%llu node_size=%zu contiguous_links=%zu/%zu (%.2f%%)\n",
+    printf("workload=list_add_stack n=%d sum=%lld time_ns=%llu node_size=%zu contiguous_links=%zu/%zu (%.2f%%)\n",
            n, (long long)sum, (unsigned long long)(t1 - t0), node_size, adjacent, links,
            adjacent_ratio * 100.0);
 #endif
-
-    // Free contiguous block
-    free(nodes);
 
     return 0;
 }

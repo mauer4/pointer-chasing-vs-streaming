@@ -3,26 +3,65 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHAMPSIM_DIR="$ROOT_DIR/third_party/champsim"
-BIN_DIR="$ROOT_DIR/bin"
 TRACE_DIR="$ROOT_DIR/traces"
-RESULTS_DIR="$ROOT_DIR/results"
+RESULTS_DIR="$ROOT_DIR/results/champsim_results"
+CONFIG_FILE="${CONFIG_FILE:-$ROOT_DIR/config/workloads.conf}"
 
-WORKLOAD_N="${WORKLOAD_N:-100000}"
+RUN_METRICS="${RUN_METRICS:-0}"
+INCLUDE_STACK="${INCLUDE_STACK:-0}"
+STACK_ONLY="${STACK_ONLY:-0}"
+N_OVERRIDE="${N_OVERRIDE:-}"
+N_LIST="${N_LIST:-}"
 
-mkdir -p "$TRACE_DIR" "$RESULTS_DIR"
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [--include-stack] [--stack-only] [--run-metrics] [--n N] [--n-list N1,N2,...]
+
+Run ChampSim simulations using existing traces (no trace generation).
+
+Options:
+  --include-stack   Include stack workloads in addition to heap (array/list).
+  --stack-only      Only run stack workloads (implies --include-stack).
+  --run-metrics     Run analysis/generate_metrics.py after simulations.
+  --n N             Override problem size for all workloads (and report filename).
+  --n-list list     Comma-separated list of N values to sweep (overrides per-workload n_*).
+  -h, --help        Show this help.
+
+Environment overrides:
+  CONFIG_FILE=/path/to/workloads.conf
+  INCLUDE_STACK=1 STACK_ONLY=1 RUN_METRICS=1 N_OVERRIDE=100000 N_LIST=100000,200000
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --include-stack) INCLUDE_STACK=1; shift ;;
+    --stack-only) STACK_ONLY=1; INCLUDE_STACK=1; shift ;;
+    --run-metrics) RUN_METRICS=1; shift ;;
+    --n) N_OVERRIDE="$2"; shift 2 ;;
+    --n-list) N_LIST="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "[run_traces] Unknown argument: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+
+DEFAULT_WARMUP="${CHAMPSIM_WARMUP_INSTRUCTIONS:-500000}"
+DEFAULT_WARMUP_LIST="${CHAMPSIM_WARMUP_INSTRUCTIONS_LIST:-}"
+DEFAULT_SIM="${CHAMPSIM_SIM_INSTRUCTIONS:-40000000}"
+DEFAULT_SIM_LIST="${CHAMPSIM_SIM_INSTRUCTIONS_LIST:-}"
+DEFAULT_N_LIST="${WORKLOAD_N_LIST:-}"
+# WORKLOAD_N may be a single value or comma-separated list
+DEFAULT_N="${WORKLOAD_N:-100000}"
 
 if [[ ! -d "$CHAMPSIM_DIR" ]]; then
-  echo "[run] ChampSim not found at $CHAMPSIM_DIR"
-  echo "[run] Run: scripts/setup.sh"
+  echo "[run_traces] ChampSim not found at $CHAMPSIM_DIR"
+  echo "[run_traces] Run: scripts/setup.sh"
   exit 1
 fi
 
-# 1) Build workloads
-"$ROOT_DIR/scripts/build_workloads.sh"
-
-# 2) Locate ChampSim binary
-# Build scripts typically create something like: bin/champsim
-# We'll search for an executable named champsim.
 CHAMPSIM_BIN=""
 if [[ -x "$CHAMPSIM_DIR/bin/champsim" ]]; then
   CHAMPSIM_BIN="$CHAMPSIM_DIR/bin/champsim"
@@ -31,115 +70,152 @@ else
 fi
 
 if [[ -z "$CHAMPSIM_BIN" ]]; then
-  echo "[run] Could not find ChampSim executable. Did build succeed?"
-  echo "[run] Look under $CHAMPSIM_DIR"
+  echo "[run_traces] Could not find ChampSim executable. Did build succeed?"
   exit 1
 fi
 
-echo "[run] Using ChampSim: $CHAMPSIM_BIN"
+mkdir -p "$TRACE_DIR" "$RESULTS_DIR"
 
-# 3) Trace generation
-# ChampSim ships an Intel PIN tracer under tracer/pin.
-# We support three modes:
-# - If a trace already exists in traces/, we reuse it.
-# - If PIN_ROOT is set and points to a built PIN distribution, we build+use the tracer.
-# - Otherwise, we fail with clear instructions.
-
-gen_trace() {
-  local workload_name="$1"
-  local exe="$2"
-  local trace_out="$3"
-
-  local trace_out_xz="${trace_out}.xz"
-
-  if [[ -f "$trace_out" ]]; then
-    echo "[trace] Reusing existing trace: $trace_out"
-    return 0
-  fi
-
-  if [[ -f "$trace_out_xz" ]]; then
-    echo "[trace] Reusing existing compressed trace: $trace_out_xz"
-    return 0
-  fi
-
-
-  if [[ -z "${PIN_ROOT:-}" ]]; then
-    echo "[trace] Missing PIN_ROOT; cannot generate traces automatically."
-    echo "[trace] ChampSim provides a PIN tracer at: $CHAMPSIM_DIR/tracer/pin"
-    echo "[trace] Options:"
-    echo "        1) Provide PIN_ROOT (path to an Intel PIN distribution) and re-run."
-    echo "        2) OR place a compatible trace at: $trace_out (or $trace_out_xz)"
-    return 2
-  fi
-
-  if [[ ! -x "$PIN_ROOT/pin" ]]; then
-    echo "[trace] PIN_ROOT is set but '$PIN_ROOT/pin' is not executable."
-    echo "[trace] PIN_ROOT should point at the root of the PIN distribution."
-    return 2
-  fi
-
-  local pin_tracer_dir="$CHAMPSIM_DIR/tracer/pin"
-  local tracer_so="$pin_tracer_dir/obj-intel64/champsim_tracer.so"
-
-  echo "[trace] Building PIN tracer (if needed): $pin_tracer_dir"
-  make -C "$pin_tracer_dir" >/dev/null
-
-  if [[ ! -f "$tracer_so" ]]; then
-    echo "[trace] Expected tracer .so was not produced: $tracer_so"
-    return 3
-  fi
-
-  echo "[trace] Generating trace for $workload_name (n=$WORKLOAD_N): $trace_out"
-  "$PIN_ROOT/pin" -t "$tracer_so" -o "$trace_out" -- "$exe" "$WORKLOAD_N"
-
-  if [[ ! -f "$trace_out" ]]; then
-    echo "[trace] Trace generation failed; output not found: $trace_out"
-    return 3
-  fi
-
-  # Compress to save space; ChampSim can read .xz directly.
-  xz -T0 -f "$trace_out"
-  if [[ ! -f "$trace_out_xz" ]]; then
-    echo "[trace] Compression failed; expected: $trace_out_xz"
-    return 3
-  fi
-  echo "[trace] Wrote: $trace_out_xz"
+trace_for_workload() {
+  local w="$1" n="$2"
+  echo "$TRACE_DIR/${w}/${w}_n=${n}.champsimtrace"
 }
 
-ARRAY_TRACE="$TRACE_DIR/array_add_${WORKLOAD_N}.champsimtrace"
-LIST_TRACE="$TRACE_DIR/list_add_${WORKLOAD_N}.champsimtrace"
-
-# Attempt trace generation (best-effort)
-set +e
-gen_trace "array_add" "$BIN_DIR/array_add" "$ARRAY_TRACE"
-ARRAY_RC=$?
-gen_trace "list_add" "$BIN_DIR/list_add" "$LIST_TRACE"
-LIST_RC=$?
-set -e
-
-if [[ $ARRAY_RC -ne 0 || $LIST_RC -ne 0 ]]; then
-  echo "[run] Trace generation not completed for all workloads."
-  echo "[run] Once you have traces in $TRACE_DIR, this script will run ChampSim and write results to $RESULTS_DIR."
-  exit 4
-fi
-
-# 4) Run ChampSim
 run_sim() {
-  local workload_name="$1"
-  local trace_in="$2"
-  local out_dir="$RESULTS_DIR/$workload_name"
+  local workload_name="$1" n_val="$2" trace_in="$3" warmup="$4" sim="$5"
+  local out_dir="$RESULTS_DIR/${workload_name}_${n_val}"
   mkdir -p "$out_dir"
 
-  echo "[sim] Running $workload_name on trace $trace_in"
-  # Follow ChampSim README: pass the trace file as a positional argument.
-  # Use smaller instruction counts by default to keep runs snappy.
-  local warmup="${CHAMPSIM_WARMUP_INSTRUCTIONS:-500000}"
-  local sim="${CHAMPSIM_SIM_INSTRUCTIONS:-2000000}"
-  "$CHAMPSIM_BIN" --warmup-instructions "$warmup" --simulation-instructions "$sim" "$trace_in" >"$out_dir/sim.txt" 2>"$out_dir/sim.err" || true
-  echo "[sim] Output: $out_dir/sim.txt"
+  echo "[sim] ${workload_name}_${n_val}: trace=$trace_in warmup=$warmup sim=$sim"
+  if ! "$CHAMPSIM_BIN" --warmup-instructions "$warmup" --simulation-instructions "$sim" "$trace_in" >"$out_dir/sim.txt" 2>"$out_dir/sim.err"; then
+    echo "[sim] ${workload_name}_${n_val}: ChampSim exited with error (see $out_dir/sim.err)" >&2
+    return 1
+  fi
+  return 0
 }
 
-run_sim "array_add_${WORKLOAD_N}" "${ARRAY_TRACE}.xz"
-run_sim "list_add_${WORKLOAD_N}" "${LIST_TRACE}.xz"
+run_for_n() {
+  local n_override="$1" idx="$2"
+  set +e
+  local local_rc=0
+  for w in "${WORKLOADS[@]}"; do
+    eval "STACK_FLAG=\${stack_${w}:-0}"
+    if [[ "$STACK_ONLY" -eq 1 && "$STACK_FLAG" -ne 1 ]]; then
+      continue
+    fi
+    if [[ "$STACK_ONLY" -ne 1 && "$INCLUDE_STACK" -eq 0 && "$STACK_FLAG" -eq 1 ]]; then
+      continue
+    fi
 
-echo "[run] Done. Results are under results/ (ignored by git)."
+    local N_W
+    if [[ -n "$n_override" ]]; then
+      N_W="$n_override"
+    else
+      N_W="${DEFAULT_N}"
+    fi
+
+    local WARMUP_W="" SIM_W=""
+
+    # Per-workload warmup list (aligned with N sweep index)
+    eval "WARMUP_LIST_W=\${warmup_cycles_${w}_list:-}"
+    if [[ -n "$WARMUP_LIST_W" ]]; then
+      IFS=',' read -r -a W_ARR_W <<< "$WARMUP_LIST_W"
+      if (( idx < ${#W_ARR_W[@]} )); then WARMUP_W="${W_ARR_W[$idx]}"; fi
+    fi
+    # Fallback to global warmup list (aligned by index)
+    if [[ -z "$WARMUP_W" && -n "$DEFAULT_WARMUP_LIST" ]]; then
+      IFS=',' read -r -a W_ARR <<< "$DEFAULT_WARMUP_LIST"
+      if (( idx < ${#W_ARR[@]} )); then WARMUP_W="${W_ARR[$idx]}"; fi
+    fi
+    # Fallback to per-workload single value, then global single value
+    if [[ -z "$WARMUP_W" ]]; then
+      eval "WARMUP_W=\${warmup_cycles_${w}:-}"
+    fi
+    if [[ -z "$WARMUP_W" ]]; then
+      eval "WARMUP_W=\${warmup_${w}:-}"
+    fi
+    if [[ -z "$WARMUP_W" ]]; then
+      WARMUP_W="$DEFAULT_WARMUP"
+    fi
+
+    # Per-workload sim list (aligned with N sweep index)
+    eval "SIM_LIST_W=\${sim_cycles_${w}_list:-}"
+    if [[ -n "$SIM_LIST_W" ]]; then
+      IFS=',' read -r -a S_ARR_W <<< "$SIM_LIST_W"
+      if (( idx < ${#S_ARR_W[@]} )); then SIM_W="${S_ARR_W[$idx]}"; fi
+    fi
+    # Fallback to global sim list
+    if [[ -z "$SIM_W" && -n "$DEFAULT_SIM_LIST" ]]; then
+      IFS=',' read -r -a S_ARR <<< "$DEFAULT_SIM_LIST"
+      if (( idx < ${#S_ARR[@]} )); then SIM_W="${S_ARR[$idx]}"; fi
+    fi
+    # Fallback to per-workload single value, then global single value
+    if [[ -z "$SIM_W" ]]; then
+      eval "SIM_W=\${sim_cycles_${w}:-}"
+    fi
+    if [[ -z "$SIM_W" ]]; then
+      eval "SIM_W=\${sim_${w}:-}"
+    fi
+    if [[ -z "$SIM_W" ]]; then
+      SIM_W="$DEFAULT_SIM"
+    fi
+
+    trace_base="$(trace_for_workload "$w" "$N_W")"
+    if [[ -f "${trace_base}.xz" ]]; then
+      trace_path="${trace_base}.xz"
+    elif [[ -f "$trace_base" ]]; then
+      trace_path="$trace_base"
+    else
+      echo "[run_traces] Missing trace for $w n=$N_W at ${trace_base}[.xz]. Run scripts/gen_traces.sh first." >&2
+      local_rc=1
+      continue
+    fi
+
+    if ! run_sim "$w" "$N_W" "$trace_path" "$WARMUP_W" "$SIM_W"; then
+      local_rc=1
+    fi
+  done
+  set -e
+  return $local_rc
+}
+
+if [[ -n "$N_LIST" ]]; then
+  IFS=',' read -r -a N_VALUES <<< "$N_LIST"
+elif [[ -n "$DEFAULT_N_LIST" ]]; then
+  IFS=',' read -r -a N_VALUES <<< "$DEFAULT_N_LIST"
+elif [[ "$DEFAULT_N" == *,* ]]; then
+  IFS=',' read -r -a N_VALUES <<< "$DEFAULT_N"
+else
+  N_VALUES=( "${N_OVERRIDE:-$DEFAULT_N}" )
+fi
+
+EXIT_CODE=0
+idx=0
+for nval in "${N_VALUES[@]}"; do
+  echo "[run_traces] === N=${nval} ==="
+  if ! run_for_n "$nval" "$idx"; then
+    EXIT_CODE=1
+  fi
+
+  idx=$((idx+1))
+
+  if [[ "$RUN_METRICS" -eq 1 ]]; then
+    METRICS_SCRIPT="$ROOT_DIR/analysis/generate_metrics.py"
+    if [[ -x "$METRICS_SCRIPT" || -f "$METRICS_SCRIPT" ]]; then
+      echo "[metrics] Running $METRICS_SCRIPT (N=$nval)"
+      if ! python "$METRICS_SCRIPT" --n "$nval"; then
+        echo "[metrics] Metrics script exited with an error for N=$nval" >&2
+      fi
+    else
+      echo "[metrics] Metrics script not found at $METRICS_SCRIPT"
+    fi
+  fi
+done
+
+if [[ $EXIT_CODE -ne 0 ]]; then
+  echo "[run_traces] Completed with errors."
+else
+  echo "[run_traces] Done. Results under $RESULTS_DIR/"
+fi
+
+exit $EXIT_CODE

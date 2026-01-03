@@ -6,9 +6,14 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CHAMPSIM_DIR="${ROOT_DIR}/third_party/champsim"
 TRACER_DIR="${CHAMPSIM_DIR}/tracer/pin"
 TRACER_SO="${TRACER_DIR}/obj-intel64/champsim_tracer.so"
-WORKLOAD_BIN_DIR="${ROOT_DIR}/build/bin"
+WORKLOAD_BIN_DIR="${ROOT_DIR}/bin"
 TRACE_ROOT="${ROOT_DIR}/traces"
-LOG_ROOT="${ROOT_DIR}/results/traces"
+LOG_ROOT="${ROOT_DIR}/results/pin_tool_logs"
+CONFIG_FILE="${CONFIG_FILE:-${ROOT_DIR}/config/workloads.conf}"
+REGEN_TRACES="${REGEN_TRACES:-0}"
+
+STACK_ONLY="${STACK_ONLY:-0}"
+INCLUDE_STACK="${INCLUDE_STACK:-0}"
 
 ARCH="$(uname -m)"; OS="$(uname -s)"
 if [[ "${OS}" != "Linux" || "${ARCH}" != "x86_64" ]]; then
@@ -26,22 +31,38 @@ PIN_BIN="${PIN_ROOT:-}/pin"
 
 usage() {
   cat <<EOF
-Usage: $0 [--n N] [--compress] [--dry-run]
-  --n N         Number of elements (default 100000)
-  --compress    Compress traces with xz
-  --dry-run     Print commands only
+Usage: $0 [--n N] [--n-list N1,N2,...] [--compress] [--trace-bin SUFFIX] [--dry-run]
+  --n N              Number of elements (default WORKLOAD_N from config, else 100000)
+  --n-list list      Comma-separated list of N values to trace (overrides WORKLOAD_N_LIST and per-workload n_*)
+  --compress         Compress traces with xz (default: on)
+  --no-compress      Do not compress traces
+  --trace-bin SUFFIX Suffix for binary (default: _trace)
+  --dry-run          Print commands only
+  --stack-only       Trace only workloads marked stack_<w>=1
+  --include-stack    Trace both heap and stack workloads
+  --regen-traces     Force regeneration even if traces already exist
 EOF
 }
 
 N=100000
-COMPRESS=0
+N_OVERRIDE="${N_OVERRIDE:-}"
+N_LIST="${N_LIST:-}"
+COMPRESS=1
 DRYRUN=0
+BIN_SUFFIX="_trace"
+PIN_TRACE_TAKE=20000000 # 20M instructions
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --n) N="$2"; shift 2;;
+    --n) N_OVERRIDE="$2"; shift 2;;
+    --n-list) N_LIST="$2"; shift 2;;
     --compress) COMPRESS=1; shift;;
+  --no-compress) COMPRESS=0; shift;;
+    --trace-bin) BIN_SUFFIX="$2"; shift 2;;
     --dry-run) DRYRUN=1; shift;;
+    --stack-only) STACK_ONLY=1; shift;;
+    --include-stack) INCLUDE_STACK=1; shift;;
+    --regen-traces) REGEN_TRACES=1; shift;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown arg: $1" >&2; usage; exit 1;;
   esac
@@ -57,26 +78,55 @@ if [[ ! -f "${TRACER_SO}" ]]; then
   exit 1
 fi
 
-if [[ ! -x "${WORKLOAD_BIN_DIR}/array_add" || ! -x "${WORKLOAD_BIN_DIR}/list_add" ]]; then
-  echo "[trace] Workload binaries missing. Run scripts/build_workloads.sh (and ensure they are under build/bin)." >&2
-  exit 1
-fi
+build_trace_bin() {
+  local w="$1"
+  local src="${ROOT_DIR}/src/${w}.c"
+  local out="${WORKLOAD_BIN_DIR}/${w}${BIN_SUFFIX}"
+  if [[ ! -x "${out}" ]]; then
+    cc -O2 -std=c11 -Wall -Wextra -pedantic -DTRACING -o "${out}" "${src}"
+  fi
+  echo "${out}"
+}
+
+# shellcheck disable=SC1090
+source "${CONFIG_FILE}"
+
+DEFAULT_N="${WORKLOAD_N:-${N}}"
+DEFAULT_N_LIST="${WORKLOAD_N_LIST:-}"
 
 mkdir -p "${TRACE_ROOT}" "${LOG_ROOT}"
 
 run_one() {
   local name="$1"
   local bin="$2"
+  local n_val="$3"
   local out_dir="${TRACE_ROOT}/${name}"
   local log_dir="${LOG_ROOT}/${name}"
   mkdir -p "${out_dir}" "${log_dir}"
 
-  local fname="${name}_n=${N}.champsimtrace"
+  local fname="${name}_n=${n_val}.champsimtrace"
   local trace_path="${out_dir}/${fname}"
   local trace_path_xz="${trace_path}.xz"
   local latest_link="${out_dir}/latest.champsimtrace"
 
-  local cmd=("${PIN_BIN}" -t "${TRACER_SO}" -o "${trace_path}" -s "${PIN_TRACE_SKIP:-0}" -t "${PIN_TRACE_TAKE:-1000000}" -- "${bin}" "${N}")
+  # Reuse existing traces unless regeneration is forced
+  if [[ "${REGEN_TRACES}" -ne 1 ]]; then
+    if [[ -f "${trace_path_xz}" ]]; then
+      ln -sfn "$(basename "${trace_path_xz}")" "${latest_link}"
+      echo "[trace] ${name}: reusing existing compressed trace $(basename "${trace_path_xz}")"
+      return 0
+    elif [[ -f "${trace_path}" ]]; then
+      ln -sfn "$(basename "${trace_path}")" "${latest_link}"
+      echo "[trace] ${name}: reusing existing trace $(basename "${trace_path}")"
+      return 0
+    fi
+  else
+    rm -f "${trace_path}" "${trace_path_xz}"
+  fi
+
+  # -s 0: skip 0 instructions
+  # -t N: take N instructions
+  local cmd=("${PIN_BIN}" -t "${TRACER_SO}" -o "${trace_path}" -s "0" -t "${PIN_TRACE_TAKE}" -- "${bin}" "${n_val}")
 
   echo "[trace] ${name}: ${trace_path}"
   if [[ ${DRYRUN} -eq 1 ]]; then
@@ -90,6 +140,10 @@ run_one() {
 
   "${cmd[@]}" >"${out_log}" 2>"${err_log}" || { echo "[trace] ${name} failed" >&2; return 1; }
 
+  # Drop empty logs to reduce clutter
+  [[ -s "${out_log}" ]] || rm -f "${out_log}"
+  [[ -s "${err_log}" ]] || rm -f "${err_log}"
+
   if [[ ${COMPRESS} -eq 1 ]]; then
     xz -T0 -f "${trace_path}"
     trace_path="${trace_path_xz}"
@@ -99,5 +153,42 @@ run_one() {
   echo "[trace] ${name}: wrote $(basename "${trace_path}")"
 }
 
-run_one "array_add" "${WORKLOAD_BIN_DIR}/array_add"
-run_one "list_add" "${WORKLOAD_BIN_DIR}/list_add"
+run_for_n() {
+  local n_override="$1"  # if set, overrides per-workload n_
+  for w in "${WORKLOADS[@]}"; do
+    eval "STACK_FLAG=\${stack_${w}:-0}"
+    # filtering
+    if [[ "${STACK_ONLY}" == "1" && "${STACK_FLAG}" != "1" ]]; then
+      continue
+    fi
+    if [[ "${STACK_ONLY}" != "1" && "${INCLUDE_STACK}" == "0" && "${STACK_FLAG}" == "1" ]]; then
+      continue
+    fi
+
+    local n_effective
+    if [[ -n "${n_override}" ]]; then
+      n_effective="${n_override}"
+    else
+      eval "n_effective=\${n_${w}:-${DEFAULT_N}}"
+    fi
+
+    bin_path="$(build_trace_bin "${w}")"
+    run_one "${w}" "${bin_path}" "${n_effective}"
+  done
+}
+
+# Determine N values to trace
+if [[ -n "${N_LIST}" ]]; then
+  IFS=',' read -r -a N_VALUES <<< "${N_LIST}"
+elif [[ -n "${DEFAULT_N_LIST}" ]]; then
+  IFS=',' read -r -a N_VALUES <<< "${DEFAULT_N_LIST}"
+elif [[ "${DEFAULT_N}" == *,* ]]; then
+  IFS=',' read -r -a N_VALUES <<< "${DEFAULT_N}" 
+else
+  N_VALUES=( "${N_OVERRIDE:-$DEFAULT_N}" )
+fi
+
+for nval in "${N_VALUES[@]}"; do
+  echo "[trace] === N=${nval} ==="
+  run_for_n "${nval}"
+done

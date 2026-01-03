@@ -6,17 +6,15 @@
 #include <time.h>
 
 #ifndef DEFAULT_N
-#define DEFAULT_N 4000000
+#define DEFAULT_N 100000
 #endif
 
-// ROI Markers
-__attribute__((noinline)) void champsim_roi_begin() {
-    __asm__ volatile(""); // Prevent optimization
-}
+// To keep stack usage reasonable: 1e6 ints ~= 4 MB
+#define MAX_N 1000000
 
-__attribute__((noinline)) void champsim_roi_end() {
-    __asm__ volatile("");
-}
+// ROI Markers
+__attribute__((noinline)) void champsim_roi_begin() { __asm__ volatile(""); }
+__attribute__((noinline)) void champsim_roi_end()   { __asm__ volatile(""); }
 
 #ifndef TRACING
 static uint64_t now_ns(void) {
@@ -30,8 +28,8 @@ static int parse_n(int argc, char** argv) {
     if (argc < 2) return DEFAULT_N;
     long n = strtol(argv[1], NULL, 10);
     if (n <= 0) return DEFAULT_N;
-    if (n > 200000000) { // basic sanity guard
-        fprintf(stderr, "N too large\n");
+    if (n > MAX_N) {
+        fprintf(stderr, "N too large for stack allocation (max %d)\n", MAX_N);
         exit(2);
     }
     return (int)n;
@@ -40,11 +38,7 @@ static int parse_n(int argc, char** argv) {
 int main(int argc, char** argv) {
     int n = parse_n(argc, argv);
 
-    int32_t* a = (int32_t*)malloc((size_t)n * sizeof(int32_t));
-    if (!a) {
-        perror("malloc");
-        return 1;
-    }
+    int32_t a[MAX_N];
 
     // Deterministic initialization
     for (int i = 0; i < n; i++) {
@@ -66,9 +60,8 @@ int main(int argc, char** argv) {
 
 #ifndef TRACING
     uint64_t t1 = now_ns();
-    printf("workload=array_add n=%d sum=%lld time_ns=%llu\n", n, (long long)sum, (unsigned long long)(t1 - t0));
+    printf("workload=array_add_stack n=%d sum=%lld time_ns=%llu\n", n, (long long)sum, (unsigned long long)(t1 - t0));
 #endif
 
-    free(a);
     return 0;
 }
