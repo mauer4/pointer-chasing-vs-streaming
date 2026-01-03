@@ -2,15 +2,16 @@
 """Generate IPC, cache, and MSHR metrics tables for array vs list (heap and stack).
 
 Reads per-workload settings from config/workloads.conf, pulls IPC and L1D/LLC LOAD
-hit/miss counts (plus L1D MSHR merges when present) from results/<workload>_<N>/sim.txt,
+hit/miss counts (plus L1D MSHR merges when present) from results/champsim_results/<workload>_<N>/sim.txt,
 computes hit/miss rates and array-vs-list speedup, and writes a Markdown report to
-analysis/metrics/report.md.
+analysis/metrics/report.md (or report_<N>.md when --n is provided).
 
 Usage:
-  python analysis/generate_metrics.py [--heap-only] [--stack-only]
+    python analysis/generate_metrics.py [--heap-only] [--stack-only] [--n N]
 
 Outputs:
-  analysis/metrics/report.md
+    analysis/metrics/report.md
+    analysis/metrics/report_<N>.md (when --n is used)
 """
 
 from __future__ import annotations
@@ -23,10 +24,10 @@ from typing import Dict, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config" / "workloads.conf"
-RESULTS_DIR = ROOT / "results"
-NONTRACE_RESULTS_DIR = RESULTS_DIR / "non-trace"
+RESULTS_DIR = ROOT / "results" / "champsim_results"
+LEGACY_RESULTS_DIR = ROOT / "results"  # fallback for older runs
+NONTRACE_RESULTS_DIR = ROOT / "results" / "non-trace"
 OUTPUT_DIR = ROOT / "analysis" / "metrics"
-OUTPUT_FILE = OUTPUT_DIR / "report.md"
 
 
 def parse_config(path: Path) -> Tuple[list[str], Dict[str, str]]:
@@ -125,7 +126,9 @@ def parse_runtime(runtime_path: Path) -> Optional[float]:
     return ns / 1e6  # ms
 
 
-def workload_n(kv: Dict[str, str], name: str, fallback: str) -> str:
+def workload_n(kv: Dict[str, str], name: str, fallback: str, override_n: Optional[str]) -> str:
+    if override_n is not None:
+        return override_n
     return get_config_value(kv, f"n_{name}", fallback)
 
 
@@ -134,7 +137,12 @@ def workload_stack_flag(kv: Dict[str, str], name: str) -> bool:
 
 
 def sim_file_for(workload: str, n: str) -> Path:
-    return RESULTS_DIR / f"{workload}_{n}" / "sim.txt"
+    """Prefer new champsim_results path; fall back to legacy location if needed."""
+    new_path = RESULTS_DIR / f"{workload}_{n}" / "sim.txt"
+    if new_path.is_file():
+        return new_path
+    legacy_path = LEGACY_RESULTS_DIR / f"{workload}_{n}" / "sim.txt"
+    return legacy_path
 
 
 def runtime_file_for(workload: str, n: str) -> Path:
@@ -190,6 +198,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate IPC/L1D metrics tables")
     parser.add_argument("--heap-only", action="store_true", help="Include only heap workloads")
     parser.add_argument("--stack-only", action="store_true", help="Include only stack workloads")
+    parser.add_argument("--n", dest="override_n", help="Override N for all workloads (also sets report name)")
     args = parser.parse_args()
 
     workloads, kv = parse_config(CONFIG_PATH)
@@ -215,6 +224,7 @@ def main() -> None:
             pairs.append(("Stack", pair))
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_file = OUTPUT_DIR / (f"report_{args.override_n}.md" if args.override_n else "report.md")
 
     sections: list[str] = []
     for title, (arr_w, list_w) in pairs:
@@ -225,8 +235,8 @@ def main() -> None:
         if title == "Stack" and not is_stack:
             continue
 
-        arr_n = workload_n(kv, arr_w, "100000")
-        list_n = workload_n(kv, list_w, "100000")
+        arr_n = workload_n(kv, arr_w, "100000", args.override_n)
+        list_n = workload_n(kv, list_w, "100000", args.override_n)
 
         arr_metrics = parse_sim_metrics(sim_file_for(arr_w, arr_n))
         list_metrics = parse_sim_metrics(sim_file_for(list_w, list_n))
@@ -258,11 +268,11 @@ def main() -> None:
         sections.append("\n".join(section_parts))
 
     if not sections:
-        OUTPUT_FILE.write_text("No data found. Ensure traces/runs are present in results/.\n")
+        output_file.write_text("No data found. Ensure traces/runs are present in results/.\n")
     else:
-        OUTPUT_FILE.write_text("# Workload Metrics\n\n" + "\n".join(sections))
+        output_file.write_text("# Workload Metrics\n\n" + "\n".join(sections))
 
-    print(f"Wrote {OUTPUT_FILE}")
+    print(f"Wrote {output_file}")
 
 
 if __name__ == "__main__":

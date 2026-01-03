@@ -61,6 +61,10 @@ This produces both regular and trace-enabled binaries:
 
 # Force regenerate traces
 ./scripts/gen_traces.sh --regen-traces
+
+# Sweep multiple problem sizes
+./scripts/gen_traces.sh --n-list 100000,200000,400000
+./scripts/gen_traces.sh --n 200000           # single override for all workloads
 ```
 
 Traces are compressed by default (`.xz`) and reused on subsequent runs unless `--regen-traces` is set.
@@ -74,6 +78,9 @@ Traces are compressed by default (`.xz`) and reused on subsequent runs unless `-
 
 # Optional: generate metrics after sims
 ./scripts/run_traces.sh --run-metrics
+
+# Sweep multiple problem sizes using existing traces (requires traces for those N)
+./scripts/run_traces.sh --n-list 100000,200000 --run-metrics
 ```
 
 To rerun only the simulations with new instruction budgets: update `config/workloads.conf` and rerun `scripts/run_traces.sh` (no PIN involved).
@@ -84,6 +91,9 @@ To rerun only the simulations with new instruction budgets: update `config/workl
 ./scripts/run_native.sh           # heap only
 ./scripts/run_native.sh --include-stack
 ./scripts/run_native.sh --stack-only
+
+# Sweep multiple N values
+./scripts/run_native.sh --n-list 100000,200000
 ```
 
 ### 6) One-shot orchestration
@@ -91,17 +101,20 @@ To rerun only the simulations with new instruction budgets: update `config/workl
 ```bash
 ./scripts/run_all.sh --include-stack --run-metrics   # builds, traces, sims, native, metrics
 ./scripts/run_all.sh --regen-traces                  # force retracing first
+./scripts/run_all.sh --n-list 100000,200000 --run-metrics --include-stack
 ```
 
 ### Workload config
 
-Workloads and their per-benchmark settings live in `config/workloads.conf`:
+Workloads and their settings live in `config/workloads.conf`:
 
 - `WORKLOADS`: ordered list (e.g., `array_add list_add array_add_stack list_add_stack`)
-- Global defaults: `WORKLOAD_N`, `CHAMPSIM_WARMUP_INSTRUCTIONS`, `CHAMPSIM_SIM_INSTRUCTIONS`
-- Per-workload keys: `n_<name>`, `warmup_<name>`, `sim_<name>`, `stack_<name>` (1 for stack variant)
+- Problem sizes: `WORKLOAD_N` (single value or comma-separated list). Optional `WORKLOAD_N_LIST` can also supply the list.
+- ChampSim budgets (global defaults): `CHAMPSIM_WARMUP_INSTRUCTIONS` and `CHAMPSIM_SIM_INSTRUCTIONS` (single values) with optional lists `CHAMPSIM_WARMUP_INSTRUCTIONS_LIST` / `CHAMPSIM_SIM_INSTRUCTIONS_LIST` aligned by index with the N list when sweeping.
+- Per-workload budgets (preferred overrides): `warmup_cycles_<name>` / `sim_cycles_<name>` with optional lists `warmup_cycles_<name>_list` / `sim_cycles_<name>_list` aligned to the N sweep; fall back to the global defaults above.
+- Stack flags: `stack_<name>` (1 for stack variant) control inclusion with `--include-stack`/`--stack-only`.
 
-Both `scripts/gen_traces.sh` and `scripts/run_traces.sh` read this file and honor `--stack-only` / `--include-stack` filtering. You can override `CONFIG_FILE` to point at a different config.
+Budgets are taken as-is (no automatic scaling by N). Both `scripts/gen_traces.sh` and `scripts/run_traces.sh` read this file and honor `--stack-only` / `--include-stack` filtering. You can override `CONFIG_FILE` to point at a different config.
 
 Tracing prerequisites (Intel PIN)
 
@@ -117,16 +130,19 @@ By default, `scripts/gen_traces.sh` reuses an existing compressed trace (`.xz`).
 
 You can control run sizes with:
 
-- `WORKLOAD_N` (default `100000`)
-- `CHAMPSIM_WARMUP_INSTRUCTIONS` (default `500000`)
-- `CHAMPSIM_SIM_INSTRUCTIONS` (default `40000000`)
+- `WORKLOAD_N` (default `100000`) or `WORKLOAD_N_LIST` for multiple values
+- Global budgets: `CHAMPSIM_WARMUP_INSTRUCTIONS` / `_LIST`, `CHAMPSIM_SIM_INSTRUCTIONS` / `_LIST`
+- Per-workload budgets: `warmup_cycles_<name>` / `sim_cycles_<name>` (and optional `_list` variants) override the globals
 - `INCLUDE_STACK=1` / `--include-stack` to include the stack-based workloads
 - `STACK_ONLY=1` / `--stack-only` to run only the stack-based workloads
 
 Expected artifacts after a successful run:
 
 - Traces: `traces/<workload>/<workload>_n=<N>.champsimtrace.xz` (plus `latest.champsimtrace` symlink)
-- Results: `results/<workload>_<N>/sim.txt` and `sim.err`
+- Trace logs: `results/pin_tool_logs/<workload>/*.out|*.err` (empty logs removed)
+- ChampSim results: `results/champsim_results/<workload>_<N>/sim.txt|sim.err`
+- Native outputs: `results/non-trace/<workload>_<N>/run.txt|run.err`
+- Metrics reports: `analysis/metrics/report.md` (default) or `analysis/metrics/report_<N>.md` when `--n`/`--n-list` is used
 
 3) Analyze
 
@@ -171,13 +187,13 @@ bash scripts/run_native.sh --include-stack
 
 Artifacts
 - Traces: `traces/<bench>/<bench>_n=<N>.champsimtrace[.xz]` (+ `latest.champsimtrace` symlink)
-- Trace logs: `results/traces/<bench>/*.out|*.err`
-- Simulation outputs: `results/<bench>_<N>/sim.txt|sim.err`
+- Trace logs: `results/pin_tool_logs/<bench>/*.out|*.err` (empty logs are removed)
+- Simulation outputs: `results/champsim_results/<bench>_<N>/sim.txt|sim.err`
 - Native outputs: `results/non-trace/<bench>_<N>/run.txt|run.err`
 
 ### Rerun ChampSim only (new budgets, no retrace)
 
-1. Edit `config/workloads.conf` to change `CHAMPSIM_WARMUP_INSTRUCTIONS`, `CHAMPSIM_SIM_INSTRUCTIONS`, or per-workload overrides (`warmup_<w>`, `sim_<w>`).
+1. Edit `config/workloads.conf` to change global budgets (`CHAMPSIM_WARMUP_INSTRUCTIONS` / `_LIST`, `CHAMPSIM_SIM_INSTRUCTIONS` / `_LIST`), per-workload budgets (`warmup_cycles_<name>` / `_list`, `sim_cycles_<name>` / `_list`), or the N list (`WORKLOAD_N` / `WORKLOAD_N_LIST`).
 2. Reuse existing traces by running:
 	```bash
 	./scripts/run_traces.sh --include-stack --run-metrics
