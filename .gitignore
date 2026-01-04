@@ -16,6 +16,8 @@
 # --- traces & simulation outputs (do not track) ---
 /traces/
 /results/
+!/results/plots/
+!/results/plots/*.png
 
 # --- notebooks ---
 .ipynb_checkpoints/
