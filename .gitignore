@@ -18,6 +18,7 @@
 /results/
 !/results/plots/
 !/results/plots/*.png
+!/results/plots/**
 
 # --- notebooks ---
 .ipynb_checkpoints/
