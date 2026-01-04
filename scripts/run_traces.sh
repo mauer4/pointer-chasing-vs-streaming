@@ -58,7 +58,7 @@ DEFAULT_N="${WORKLOAD_N:-100000}"
 
 if [[ ! -d "$CHAMPSIM_DIR" ]]; then
   echo "[run_traces] ChampSim not found at $CHAMPSIM_DIR"
-  echo "[run_traces] Run: scripts/setup.sh"
+  echo "[run_traces] Run: setup_scripts/setup.sh"
   exit 1
 fi
 
@@ -190,7 +190,7 @@ else
 fi
 
 EXIT_CODE=0
-idx=0
+idx="${BUDGET_IDX:-0}"
 for nval in "${N_VALUES[@]}"; do
   echo "[run_traces] === N=${nval} ==="
   if ! run_for_n "$nval" "$idx"; then
@@ -203,7 +203,7 @@ for nval in "${N_VALUES[@]}"; do
     METRICS_SCRIPT="$ROOT_DIR/analysis/generate_metrics.py"
     if [[ -x "$METRICS_SCRIPT" || -f "$METRICS_SCRIPT" ]]; then
       echo "[metrics] Running $METRICS_SCRIPT (N=$nval)"
-      if ! python "$METRICS_SCRIPT" --n "$nval"; then
+      if ! python3 "$METRICS_SCRIPT" --n "$nval"; then
         echo "[metrics] Metrics script exited with an error for N=$nval" >&2
       fi
     else

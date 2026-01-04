@@ -34,9 +34,6 @@ mkdir -p "$RESULTS_DIR"
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
 
-# Build non-tracing binaries once
-"$ROOT_DIR/scripts/build_workloads.sh"
-
 DEFAULT_N="${WORKLOAD_N:-100000}"
 DEFAULT_N_LIST="${WORKLOAD_N_LIST:-}"
 
@@ -58,14 +55,15 @@ run_for_n() {
       N_W="$DEFAULT_N"
     fi
 
-    exe="$BIN_DIR/$w"
+    exe="$BIN_DIR/${w}_${N_W}"
     if [[ ! -x "$exe" ]]; then
       echo "[run_native] Missing binary: $exe" >&2
+      echo "[run_native] Run build_workloads.sh with --n-list first" >&2
       continue
     fi
     out_dir="$RESULTS_DIR/${w}_${N_W}"
     mkdir -p "$out_dir"
-    echo "[run_native] Running $w n=$N_W"
+    echo "[run_native] Running $w n=$N_W (binary: ${w}_${N_W})"
     "$exe" "$N_W" >"$out_dir/run.txt" 2>"$out_dir/run.err" || true
     echo "[run_native] Output: $out_dir/run.txt"
   done

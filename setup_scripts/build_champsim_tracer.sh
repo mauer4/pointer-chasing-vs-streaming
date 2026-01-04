@@ -20,7 +20,7 @@ if [[ -f "${SCRIPT_DIR}/env.sh" ]]; then
 fi
 
 if [[ -z "${PIN_ROOT:-}" ]]; then
-  echo "[tracer] PIN_ROOT not set. Run source scripts/env.sh or install_pin.sh first." >&2
+  echo "[tracer] PIN_ROOT not set. Run 'source setup_scripts/env.sh' or setup_scripts/install_pin.sh first." >&2
   exit 1
 fi
 

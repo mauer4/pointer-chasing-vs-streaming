@@ -63,33 +63,51 @@ run_step_bash() {
 info "Workspace: $ROOT_DIR"
 info "Logging to: $LOG_FILE"
 
-# 1) System dependencies
+# 1) System dependencies (opt-in install; no surprise sudo)
 # ChampSim build generally needs: git, gcc/g++, make, python3. Some configs may use cmake.
+# If SETUP_INSTALL_SYSTEM_DEPS=1 and passwordless sudo is available, we'll install.
+# Otherwise we only emit guidance and fail fast on missing tools.
 if command -v apt-get >/dev/null 2>&1; then
-  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-    info "Installing minimal apt dependencies (sudo available)..."
-    run_step "apt-get update" sudo apt-get update -y
-    run_step "apt-get install deps" sudo apt-get install -y \
-      git \
-      build-essential \
-      gcc g++ \
-      make \
-      cmake \
-      ninja-build \
-      pkg-config \
-      python3 python3-pip \
-      ca-certificates
+  if [[ "${SETUP_INSTALL_SYSTEM_DEPS:-0}" == "1" ]]; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+      info "Installing minimal apt dependencies (opt-in, passwordless sudo detected)..."
+      run_step "apt-get update" sudo apt-get update -y
+      run_step "apt-get install deps" sudo apt-get install -y \
+        git \
+        build-essential \
+        gcc g++ \
+        make \
+        cmake \
+        ninja-build \
+        pkg-config \
+        python3 python3-pip \
+        ca-certificates \
+        zip unzip curl tar
+    else
+      info "SETUP_INSTALL_SYSTEM_DEPS=1 but passwordless sudo is unavailable; skipping install."
+    fi
   else
-    info "No passwordless sudo available; skipping apt installs."
+    info "Skipping apt installs (SETUP_INSTALL_SYSTEM_DEPS!=1)."
   fi
 else
   info "No apt-get found; skipping system package install."
 fi
 
-# 2) Python deps for notebook
-info "Installing python deps (user site)..."
-run_step "pip upgrade" python3 -m pip install --user -U pip
-run_step "pip install notebook deps" python3 -m pip install --user -U pandas numpy matplotlib seaborn
+# Preflight: ensure tools needed for vcpkg/bootstrap are present even if apt was skipped.
+run_step "preflight: zip/unzip/curl/tar/pkg-config" bash -lc 'for tool in zip unzip curl tar pkg-config; do if ! command -v "$tool" >/dev/null 2>&1; then echo "$tool missing. Install (Debian/Ubuntu): sudo apt-get install -y zip unzip curl tar pkg-config"; exit 1; fi; done'
+
+# 2) Python deps for notebook (always in local venv to avoid PEP668)
+VENVDIR="$ROOT_DIR/.venv"
+PYTHON_VENV="$VENVDIR/bin/python"
+PIP_VENV="$VENVDIR/bin/pip"
+
+info "Ensuring local venv at $VENVDIR (avoids system pip/PEP668)"
+run_step "python venv create" python3 -m venv "$VENVDIR"
+
+info "Installing python deps in venv..."
+run_step "pip upgrade (venv)" "$PIP_VENV" install --upgrade pip
+run_step "pip install notebook deps (venv)" "$PIP_VENV" install -U pandas numpy matplotlib seaborn
+info "To use the venv: source $VENVDIR/bin/activate"
 
 # 3) Clone ChampSim (not tracked in git)
 mkdir -p "$TP_DIR"
@@ -119,32 +137,35 @@ if [[ -d "$CHAMPSIM_DIR" ]]; then
   # IMPORTANT: ChampSim's Makefile expects dependencies under ./vcpkg_installed/<triplet>/...
   # (TRIPLET_DIR is derived from vcpkg_installed/*). If we run vcpkg without --x-install-root,
   # headers/libraries won't be found and the generated absolute.options may contain a dangling '-isystem'.
-  run_step "vcpkg install (into vcpkg_installed/)" bash -lc "cd '$CHAMPSIM_DIR' && ./vcpkg/vcpkg install --x-install-root=./vcpkg_installed"
+    run_step "vcpkg install (into vcpkg_installed/)" bash -lc "cd '$CHAMPSIM_DIR' && ./vcpkg/vcpkg install --x-install-root=./vcpkg_installed"
 
-  # Root-cause guard: ChampSim's Makefile derives include/lib dirs from ./vcpkg_installed/*/.
-  # If this directory is missing or empty, absolute.options will be malformed (dangling -isystem)
-  # and compilation will fail with missing headers (nlohmann/json.hpp, bzlib.h, etc.).
-  run_step "preflight: vcpkg_installed triplet dir" bash -lc "cd '$CHAMPSIM_DIR' && test -d vcpkg_installed/x64-linux/include"
+    # Root-cause guard: ChampSim's Makefile derives include/lib dirs from ./vcpkg_installed/*/.
+    # If this directory is missing or empty, stop here to avoid cascading errors.
+    if [[ ! -d "$CHAMPSIM_DIR/vcpkg_installed/x64-linux/include" ]]; then
+      info "[WARN] vcpkg_installed/x64-linux/include missing; skipping ChampSim build. Install system deps (e.g., pkg-config) and rerun setup."
+      FAILURES=$((FAILURES + 1))
+      failed_steps+=("vcpkg install (deps missing)")
+    else
+      # If previous runs created malformed option files, force regeneration.
+      run_step "clean stale options" bash -lc "cd '$CHAMPSIM_DIR' && rm -f absolute.options"
 
-  # If previous runs created malformed option files, force regeneration.
-  run_step "clean stale options" bash -lc "cd '$CHAMPSIM_DIR' && rm -f absolute.options"
+      # Generate _configuration.mk and generated headers under .csconfig/
+      run_step "config.sh champsim_config.json" bash -lc "cd '$CHAMPSIM_DIR' && ./config.sh champsim_config.json"
 
-    # Generate _configuration.mk and generated headers under .csconfig/
-    run_step "config.sh champsim_config.json" bash -lc "cd '$CHAMPSIM_DIR' && ./config.sh champsim_config.json"
+      # Preflight checks that catch the exact class of failure we saw (broken include flags / missing generated files)
+      run_step "preflight: generated core_inst.inc" bash -lc "cd '$CHAMPSIM_DIR' && test -f .csconfig/core_inst.inc"
+      run_step "preflight: vcpkg json header" bash -lc "cd '$CHAMPSIM_DIR' && test -f vcpkg_installed/x64-linux/include/nlohmann/json.hpp"
+      run_step "preflight: vcpkg bzip2 header" bash -lc "cd '$CHAMPSIM_DIR' && test -f vcpkg_installed/x64-linux/include/bzlib.h"
 
-    # Preflight checks that catch the exact class of failure we saw (broken include flags / missing generated files)
-    run_step "preflight: generated core_inst.inc" bash -lc "cd '$CHAMPSIM_DIR' && test -f .csconfig/core_inst.inc"
-    run_step "preflight: vcpkg json header" bash -lc "cd '$CHAMPSIM_DIR' && test -f vcpkg_installed/x64-linux/include/nlohmann/json.hpp"
-    run_step "preflight: vcpkg bzip2 header" bash -lc "cd '$CHAMPSIM_DIR' && test -f vcpkg_installed/x64-linux/include/bzlib.h"
+      # Ensure absolute.options is well-formed and points at vcpkg_installed/<triplet>/include
+      run_step "preflight: regenerate absolute.options" bash -lc "cd '$CHAMPSIM_DIR' && make -B absolute.options"
+      run_step "preflight: absolute.options sanity" bash -lc "cd '$CHAMPSIM_DIR' && ! grep -qE '(^|[[:space:]])-isystem[[:space:]]*$' absolute.options"
+      run_step "preflight: absolute.options has vcpkg_installed" bash -lc "cd '$CHAMPSIM_DIR' && grep -q 'vcpkg_installed/.*/include' absolute.options"
 
-    # Ensure absolute.options is well-formed and points at vcpkg_installed/<triplet>/include
-    run_step "preflight: regenerate absolute.options" bash -lc "cd '$CHAMPSIM_DIR' && make -B absolute.options"
-    run_step "preflight: absolute.options sanity" bash -lc "cd '$CHAMPSIM_DIR' && ! grep -qE '(^|[[:space:]])-isystem[[:space:]]*$' absolute.options"
-    run_step "preflight: absolute.options has vcpkg_installed" bash -lc "cd '$CHAMPSIM_DIR' && grep -q 'vcpkg_installed/.*/include' absolute.options"
-
-    # Deterministic build first, *then* parallelize once verified.
-    run_step "make (single-threaded)" bash -lc "cd '$CHAMPSIM_DIR' && make"
-    run_step "make (parallel)" bash -lc "cd '$CHAMPSIM_DIR' && make -j'$(nproc)'"
+      # Deterministic build first, *then* parallelize once verified.
+      run_step "make (single-threaded)" bash -lc "cd '$CHAMPSIM_DIR' && make"
+      run_step "make (parallel)" bash -lc "cd '$CHAMPSIM_DIR' && make -j'$(nproc)'"
+    fi
   else
     info "[WARN] Could not find build script/Makefile in ChampSim clone. Check upstream layout."
     FAILURES=$((FAILURES + 1))

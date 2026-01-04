@@ -1,5 +1,5 @@
 Intel PIN
 Version: pin-3.22-98547-g7a303a835-gcc-linux
 Source: https://software.intel.com/sites/landingpage/pintool/downloads/pin-3.22-98547-g7a303a835-gcc-linux.tar.gz
-Installed: Wed Dec 31 07:12:45 UTC 2025
-Location: /workspace/pointer-chasing-vs-streaming/third_party/pin-3.22-98547-g7a303a835-gcc-linux
+Installed: Sun Jan  4 03:22:34 UTC 2026
+Location: /home/mauer/pointer-chasing-vs-streaming/third_party/pin-3.22-98547-g7a303a835-gcc-linux

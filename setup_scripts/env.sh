@@ -23,7 +23,7 @@ else
 fi
 
 if [[ -z "${PIN_ROOT:-}" ]]; then
-  echo "[env] PIN_ROOT not found. Run scripts/install_pin.sh first." >&2
+  echo "[env] PIN_ROOT not found. Run setup_scripts/install_pin.sh first." >&2
 else
   echo "[env] PIN_ROOT=${PIN_ROOT}"
 fi

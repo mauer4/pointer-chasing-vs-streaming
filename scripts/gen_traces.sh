@@ -22,9 +22,9 @@ if [[ "${OS}" != "Linux" || "${ARCH}" != "x86_64" ]]; then
 fi
 
 # Load PIN_ROOT if available
-if [[ -f "${SCRIPT_DIR}/env.sh" ]]; then
+if [[ -f "${ROOT_DIR}/setup_scripts/env.sh" ]]; then
   # shellcheck disable=SC1091
-  source "${SCRIPT_DIR}/env.sh"
+  source "${ROOT_DIR}/setup_scripts/env.sh"
 fi
 
 PIN_BIN="${PIN_ROOT:-}/pin"
@@ -69,21 +69,23 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${PIN_ROOT:-}" || ! -x "${PIN_BIN}" ]]; then
-  echo "[trace] PIN_ROOT not set or pin not executable. Run 'source scripts/env.sh' and install_pin.sh." >&2
+  echo "[trace] PIN_ROOT not set or pin not executable. Run 'source setup_scripts/env.sh' and setup_scripts/install_pin.sh." >&2
   exit 1
 fi
 
 if [[ ! -f "${TRACER_SO}" ]]; then
-  echo "[trace] Tracer .so missing: ${TRACER_SO}. Run scripts/build_champsim_tracer.sh." >&2
+  echo "[trace] Tracer .so missing: ${TRACER_SO}. Run setup_scripts/build_champsim_tracer.sh." >&2
   exit 1
 fi
 
 build_trace_bin() {
   local w="$1"
-  local src="${ROOT_DIR}/src/${w}.c"
-  local out="${WORKLOAD_BIN_DIR}/${w}${BIN_SUFFIX}"
+  local n="$2"
+  local out="${WORKLOAD_BIN_DIR}/${w}_${n}${BIN_SUFFIX}"
   if [[ ! -x "${out}" ]]; then
-    cc -O2 -std=c11 -Wall -Wextra -pedantic -DTRACING -o "${out}" "${src}"
+    echo "[trace] ERROR: Binary not found: ${out}" >&2
+    echo "[trace] Run build_workloads.sh with --n-list first" >&2
+    exit 1
   fi
   echo "${out}"
 }
@@ -172,7 +174,7 @@ run_for_n() {
       eval "n_effective=\${n_${w}:-${DEFAULT_N}}"
     fi
 
-    bin_path="$(build_trace_bin "${w}")"
+    bin_path="$(build_trace_bin "${w}" "${n_effective}")"
     run_one "${w}" "${bin_path}" "${n_effective}"
   done
 }

@@ -50,6 +50,6 @@ EOF
 # Export instructions
 cat <<'EOF'
 [pin] Installed.
-[pin] To use, run: source scripts/env.sh
+[pin] To use, run: source setup_scripts/env.sh
 [pin] PIN_ROOT will be set to third_party/pin
 EOF

@@ -55,6 +55,16 @@ source "$CONFIG_FILE"
 DEFAULT_N_LIST="${WORKLOAD_N_LIST:-}"
 DEFAULT_N_VALUE="${WORKLOAD_N:-}"
 
+# Capture config-provided N list as an array for budget indexing
+CONFIG_N_VALUES=()
+if [[ -n "$DEFAULT_N_LIST" ]]; then
+  IFS=',' read -r -a CONFIG_N_VALUES <<< "$DEFAULT_N_LIST"
+elif [[ "$DEFAULT_N_VALUE" == *,* ]]; then
+  IFS=',' read -r -a CONFIG_N_VALUES <<< "$DEFAULT_N_VALUE"
+elif [[ -n "$DEFAULT_N_VALUE" ]]; then
+  CONFIG_N_VALUES=("$DEFAULT_N_VALUE")
+fi
+
 STACK_ARGS=()
 if [[ "$INCLUDE_STACK" -eq 1 ]]; then
   STACK_ARGS+=("--include-stack")
@@ -63,13 +73,9 @@ if [[ "$STACK_ONLY" -eq 1 ]]; then
   STACK_ARGS+=("--stack-only")
 fi
 
-N_ARGS=()
 # Will append --n <value> later inside loop per N
 
-echo "[run_all] Step 1/5: Building workloads (trace + non-trace)"
-CONFIG_FILE="$CONFIG_FILE" "$ROOT_DIR/scripts/build_workloads.sh"
-
-# Determine N sweep
+# Determine N sweep first (before building)
 if [[ -n "$N_LIST" ]]; then
   IFS=',' read -r -a N_VALUES <<< "$N_LIST"
 elif [[ -n "$DEFAULT_N_LIST" ]]; then
@@ -78,6 +84,22 @@ elif [[ "$DEFAULT_N_VALUE" == *,* ]]; then
   IFS=',' read -r -a N_VALUES <<< "$DEFAULT_N_VALUE"
 else
   N_VALUES=( "${N_OVERRIDE:-$DEFAULT_N_VALUE}" )
+fi
+
+# Build N-specific binaries
+echo "[run_all] Step 1/5: Building workloads (trace + non-trace) for N values: ${N_VALUES[*]}"
+if [[ -n "$N_LIST" ]]; then
+  CONFIG_FILE="$CONFIG_FILE" "$ROOT_DIR/scripts/build_workloads.sh" --n-list "$N_LIST"
+elif [[ -n "$DEFAULT_N_LIST" ]]; then
+  CONFIG_FILE="$CONFIG_FILE" "$ROOT_DIR/scripts/build_workloads.sh" --n-list "$DEFAULT_N_LIST"
+elif [[ "$DEFAULT_N_VALUE" == *,* ]]; then
+  CONFIG_FILE="$CONFIG_FILE" "$ROOT_DIR/scripts/build_workloads.sh" --n-list "$DEFAULT_N_VALUE"
+elif [[ -n "${N_VALUES[0]}" ]]; then
+  # Single N value
+  CONFIG_FILE="$CONFIG_FILE" "$ROOT_DIR/scripts/build_workloads.sh" --n-list "${N_VALUES[0]}"
+else
+  # Build defaults
+  CONFIG_FILE="$CONFIG_FILE" "$ROOT_DIR/scripts/build_workloads.sh"
 fi
 
 STEP_TOTAL=5
@@ -90,30 +112,47 @@ for nval in "${N_VALUES[@]}"; do
     N_ARGS+=("--n" "$nval")
   fi
 
+  # When the user supplies --n-list, force child scripts to honor only this N (ignore config lists)
+  CHILD_N_LIST=""
+  if [[ -n "$N_LIST" ]]; then
+    CHILD_N_LIST="$nval"
+  fi
+
+   # Determine budget index based on position within config N list (if present)
+   BUDGET_IDX=""
+   if (( ${#CONFIG_N_VALUES[@]} > 0 )); then
+     for i in "${!CONFIG_N_VALUES[@]}"; do
+       if [[ "${CONFIG_N_VALUES[$i]}" == "$nval" ]]; then
+         BUDGET_IDX="$i"
+         break
+       fi
+     done
+   fi
+
   echo "[run_all] Step 2/$STEP_TOTAL: Generating traces via scripts/gen_traces.sh"
   if (( ${#STACK_ARGS[@]} )); then
-    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" REGEN_TRACES="$REGEN_TRACES" \
+    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" REGEN_TRACES="$REGEN_TRACES" N_LIST="$CHILD_N_LIST" \
       "$ROOT_DIR/scripts/gen_traces.sh" "${STACK_ARGS[@]}" "${N_ARGS[@]}"
   else
-    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" REGEN_TRACES="$REGEN_TRACES" \
+    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" REGEN_TRACES="$REGEN_TRACES" N_LIST="$CHILD_N_LIST" \
       "$ROOT_DIR/scripts/gen_traces.sh" "${N_ARGS[@]}"
   fi
 
   echo "[run_all] Step 3/$STEP_TOTAL: Running ChampSim simulations via scripts/run_traces.sh"
   if (( ${#STACK_ARGS[@]} )); then
-    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 \
+    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 N_LIST="$CHILD_N_LIST" BUDGET_IDX="$BUDGET_IDX" \
       "$ROOT_DIR/scripts/run_traces.sh" "${STACK_ARGS[@]}" "${N_ARGS[@]}"
   else
-    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 \
+    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" RUN_METRICS=0 N_LIST="$CHILD_N_LIST" BUDGET_IDX="$BUDGET_IDX" \
       "$ROOT_DIR/scripts/run_traces.sh" "${N_ARGS[@]}"
   fi
 
   echo "[run_all] Step 4/$STEP_TOTAL: Running native binaries via scripts/run_native.sh"
   if (( ${#STACK_ARGS[@]} )); then
-    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" \
+    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" N_LIST="$CHILD_N_LIST" \
       "$ROOT_DIR/scripts/run_native.sh" "${STACK_ARGS[@]}" "${N_ARGS[@]}"
   else
-    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" \
+    CONFIG_FILE="$CONFIG_FILE" INCLUDE_STACK="$INCLUDE_STACK" STACK_ONLY="$STACK_ONLY" N_LIST="$CHILD_N_LIST" \
       "$ROOT_DIR/scripts/run_native.sh" "${N_ARGS[@]}"
   fi
 
@@ -123,9 +162,9 @@ for nval in "${N_VALUES[@]}"; do
     if [[ -f "$METRICS_SCRIPT" ]]; then
       echo "[run_all] Running metrics script (N=${N_LABEL})"
       if [[ -n "$nval" ]]; then
-        python "$METRICS_SCRIPT" --n "$nval" || echo "[run_all] Metrics script failed for N=$nval"
+        python3 "$METRICS_SCRIPT" --n "$nval" || echo "[run_all] Metrics script failed for N=$nval"
       else
-        python "$METRICS_SCRIPT" || echo "[run_all] Metrics script failed"
+        python3 "$METRICS_SCRIPT" || echo "[run_all] Metrics script failed"
       fi
     else
       echo "[run_all] Metrics script not found at $METRICS_SCRIPT"

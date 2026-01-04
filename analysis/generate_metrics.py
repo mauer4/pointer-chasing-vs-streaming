@@ -3,21 +3,19 @@
 
 Reads per-workload settings from config/workloads.conf, pulls IPC and L1D/LLC LOAD
 hit/miss counts (plus L1D MSHR merges when present) from results/champsim_results/<workload>_<N>/sim.txt,
-computes hit/miss rates and array-vs-list speedup, and writes a Markdown report to
-analysis/metrics/report.md (or report_<N>.md when --n is provided).
+computes hit/miss rates and array-vs-list speedup, and writes Markdown reports to
+analysis/metrics/report_<N>.md for every N discovered under results/champsim_results.
 
 Usage:
     python analysis/generate_metrics.py [--heap-only] [--stack-only] [--n N]
 
 Outputs:
-    analysis/metrics/report.md
-    analysis/metrics/report_<N>.md (when --n is used)
+    analysis/metrics/report_<N>.md (one per N discovered)
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import re
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -28,6 +26,20 @@ RESULTS_DIR = ROOT / "results" / "champsim_results"
 LEGACY_RESULTS_DIR = ROOT / "results"  # fallback for older runs
 NONTRACE_RESULTS_DIR = ROOT / "results" / "non-trace"
 OUTPUT_DIR = ROOT / "analysis" / "metrics"
+
+
+def discover_n_values(workloads: list[str]) -> list[str]:
+    """Find available N values by scanning results/champsim_results/<workload>_<N> dirs."""
+    n_values: set[str] = set()
+    for w in workloads:
+        prefix = f"{w}_"
+        for entry in RESULTS_DIR.glob(f"{prefix}*"):
+            if not entry.is_dir():
+                continue
+            suffix = entry.name[len(prefix) :]
+            if suffix and re.fullmatch(r"[0-9]+", suffix):
+                n_values.add(suffix)
+    return sorted(n_values, key=int)
 
 
 def parse_config(path: Path) -> Tuple[list[str], Dict[str, str]]:
@@ -126,12 +138,6 @@ def parse_runtime(runtime_path: Path) -> Optional[float]:
     return ns / 1e6  # ms
 
 
-def workload_n(kv: Dict[str, str], name: str, fallback: str, override_n: Optional[str]) -> str:
-    if override_n is not None:
-        return override_n
-    return get_config_value(kv, f"n_{name}", fallback)
-
-
 def workload_stack_flag(kv: Dict[str, str], name: str) -> bool:
     return get_config_value(kv, f"stack_{name}", "0") == "1"
 
@@ -198,12 +204,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate IPC/L1D metrics tables")
     parser.add_argument("--heap-only", action="store_true", help="Include only heap workloads")
     parser.add_argument("--stack-only", action="store_true", help="Include only stack workloads")
-    parser.add_argument("--n", dest="override_n", help="Override N for all workloads (also sets report name)")
+    parser.add_argument("--n", dest="override_n", help="(Ignored for report naming) previously overrode N")
     args = parser.parse_args()
 
     workloads, kv = parse_config(CONFIG_PATH)
     if not workloads:
         raise SystemExit(f"No WORKLOADS found in {CONFIG_PATH}")
+
+    n_values = discover_n_values(workloads)
+    if not n_values:
+        raise SystemExit(
+            f"No results found in {RESULTS_DIR} matching <workload>_<N>. Run tracing/sim first."
+        )
+    if args.override_n:
+        print(f"[info] --n {args.override_n} provided but will generate reports for all discovered N values: {', '.join(n_values)}")
 
     # Identify array/list pairs
     def collect_pair(is_stack: bool):
@@ -224,55 +238,63 @@ def main() -> None:
             pairs.append(("Stack", pair))
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_file = OUTPUT_DIR / (f"report_{args.override_n}.md" if args.override_n else "report.md")
 
-    sections: list[str] = []
-    for title, (arr_w, list_w) in pairs:
-        # Check stack flags vs requested mode
-        is_stack = workload_stack_flag(kv, arr_w)
-        if title == "Heap" and is_stack:
-            continue
-        if title == "Stack" and not is_stack:
-            continue
+    generated: list[str] = []
+    for n_val in n_values:
+        output_file = OUTPUT_DIR / f"report_{n_val}.md"
 
-        arr_n = workload_n(kv, arr_w, "100000", args.override_n)
-        list_n = workload_n(kv, list_w, "100000", args.override_n)
+        sections: list[str] = []
+        for title, (arr_w, list_w) in pairs:
+            # Check stack flags vs requested mode
+            is_stack = workload_stack_flag(kv, arr_w)
+            if title == "Heap" and is_stack:
+                continue
+            if title == "Stack" and not is_stack:
+                continue
 
-        arr_metrics = parse_sim_metrics(sim_file_for(arr_w, arr_n))
-        list_metrics = parse_sim_metrics(sim_file_for(list_w, list_n))
+            arr_n = n_val
+            list_n = n_val
 
-        metric_rows: list[dict] = []
-        ipc_speedup = None
-        if arr_metrics:
-            metric_rows.append({"name": arr_w, **arr_metrics})
-        if list_metrics:
-            metric_rows.append({"name": list_w, **list_metrics})
-        if arr_metrics and list_metrics:
-            ipc_speedup = arr_metrics["ipc"] / list_metrics["ipc"] if list_metrics["ipc"] else None
+            arr_metrics = parse_sim_metrics(sim_file_for(arr_w, arr_n))
+            list_metrics = parse_sim_metrics(sim_file_for(list_w, list_n))
 
-        arr_runtime = parse_runtime(runtime_file_for(arr_w, arr_n))
-        list_runtime = parse_runtime(runtime_file_for(list_w, list_n))
-        runtime_rows: list[dict] = []
-        wall_speedup = None
-        if arr_runtime is not None:
-            runtime_rows.append({"name": arr_w, "runtime_ms": arr_runtime})
-        if list_runtime is not None:
-            runtime_rows.append({"name": list_w, "runtime_ms": list_runtime})
-        if arr_runtime is not None and list_runtime is not None:
-            wall_speedup = list_runtime / arr_runtime if arr_runtime else None
+            metric_rows: list[dict] = []
+            ipc_speedup = None
+            if arr_metrics:
+                metric_rows.append({"name": arr_w, **arr_metrics})
+            if list_metrics:
+                metric_rows.append({"name": list_w, **list_metrics})
+            if arr_metrics and list_metrics:
+                ipc_speedup = arr_metrics["ipc"] / list_metrics["ipc"] if list_metrics["ipc"] else None
 
-        section_parts = [render_table(title, metric_rows, ipc_speedup)]
-        runtime_table = render_runtime_table(title, runtime_rows, wall_speedup)
-        if runtime_table:
-            section_parts.append(runtime_table)
-        sections.append("\n".join(section_parts))
+            arr_runtime = parse_runtime(runtime_file_for(arr_w, arr_n))
+            list_runtime = parse_runtime(runtime_file_for(list_w, list_n))
+            runtime_rows: list[dict] = []
+            wall_speedup = None
+            if arr_runtime is not None:
+                runtime_rows.append({"name": arr_w, "runtime_ms": arr_runtime})
+            if list_runtime is not None:
+                runtime_rows.append({"name": list_w, "runtime_ms": list_runtime})
+            if arr_runtime is not None and list_runtime is not None:
+                wall_speedup = list_runtime / arr_runtime if arr_runtime else None
 
-    if not sections:
-        output_file.write_text("No data found. Ensure traces/runs are present in results/.\n")
+            section_parts = [render_table(title, metric_rows, ipc_speedup)]
+            runtime_table = render_runtime_table(title, runtime_rows, wall_speedup)
+            if runtime_table:
+                section_parts.append(runtime_table)
+            sections.append("\n".join(section_parts))
+
+        if not sections:
+            output_file.write_text("No data found. Ensure traces/runs are present in results/.\n")
+        else:
+            output_file.write_text("# Workload Metrics\n\n" + "\n".join(sections))
+
+        generated.append(output_file.name)
+
+    if generated:
+        print(f"Wrote reports: {', '.join(generated)}")
     else:
-        output_file.write_text("# Workload Metrics\n\n" + "\n".join(sections))
-
-    print(f"Wrote {output_file}")
+        print("No reports generated (no matching results directories found)")
 
 
 if __name__ == "__main__":

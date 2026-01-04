@@ -4,38 +4,23 @@
 
 | workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses | LLC load hit rate | LLC load miss rate | L1D load MSHR merges | L1D load MSHR rate |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| array_add | 3.196 | 49.91% | 50.09% | 73142 | 99.88% | 0.12% | 32063 | 43.8366% |
-| list_add | 1.108 | 98.53% | 1.47% | 485252 | 0.00% | 0.00% | 7127 | 1.4687% |
+| array_add | 3.152 | 54.98% | 45.02% | 45551 | 99.74% | 0.26% | 17656 | 38.7609% |
+| list_add | 1.430 | 91.47% | 8.53% | 5722 | 0.00% | 100.00% | 204 | 3.5652% |
 
-**IPC speedup (array / list):** 2.884
+**IPC speedup (array / list):** 2.204
 
 
 ### Heap wall-clock
 
 | workload | runtime (ms) |
 |---|---:|
-| array_add | 0.053 |
-| list_add | 0.117 |
+| array_add | 0.047 |
+| list_add | 0.129 |
 
-**Wall-clock speedup (array / list):** 2.204
+**Wall-clock speedup (array / list):** 2.757
 
 
 ### Stack
 
-| workload | IPC | L1D load hit rate | L1D load miss rate | L1D load accesses | LLC load hit rate | LLC load miss rate | L1D load MSHR merges | L1D load MSHR rate |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| array_add_stack | 3.523 | 48.61% | 51.39% | 72898 | 100.00% | 0.00% | 32898 | 45.1288% |
-| list_add_stack | 1.238 | 87.50% | 12.50% | 86755 | 99.99% | 0.01% | 0 | 0.0000% |
-
-**IPC speedup (array / list):** 2.846
-
-
-### Stack wall-clock
-
-| workload | runtime (ms) |
-|---|---:|
-| array_add_stack | 0.053 |
-| list_add_stack | 0.175 |
-
-**Wall-clock speedup (array / list):** 3.295
+_No data found._
 

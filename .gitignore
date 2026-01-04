@@ -1,5 +1,6 @@
 # --- third-party deps (do not track) ---
 /third_party/champsim/
+/third_party/pin
 /third_party/pin/
 /third_party/pin-*/
 /third_party/*.tar.gz
@@ -26,3 +27,7 @@
 # --- OS/editor ---
 .vscode/
 .DS_Store
+
+# --- virtual environments ---
+.venv/
+venv/
