@@ -1,10 +1,11 @@
 # Pointer chasing vs streaming (ChampSim)
 
-This repo studies the performance penalty of summing N integers in a linked list compared to an array. The common claim is that the gap is explained by cache miss rates; the results here point instead to load serialization as the dominant cause.
+This repo studies the performance penalty of summing N integers in a linked list compared to an array. The common claim is that the gap is explained by cache miss rates 0 but a deeper understanding of OoO (Out-of-order) processors reveal that something different is happening; the results in this repo point instead to load serialization (inability to parallelize loads) in the linked list implementation as the dominant cause.
 
 Goal: run instruction traces of both programs through ChampSim, a cycle-accurate out-of-order core + cache/memory hierarchy simulator.
 
-Key result: cache miss rates do not explain the slowdown. With lower MSHR pressure, the linked list shows ~0 load issue parallelism, while the array version sustains ~80% load parallelism.
+Key result: cache miss rates do not explain the slowdown. With lower MSHR merges (Mistt-Status-Hit-Register) pressure, the linked list shows ~0 load issue parallelism, while the array version sustains ~80% load parallelism.
+MSHR merges reflect a 'filtering' or parallel load requests targetting the same cache line.
 
 ## Workloads
 
