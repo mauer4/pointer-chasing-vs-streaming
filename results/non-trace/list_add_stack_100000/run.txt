@@ -1,0 +1,1 @@
+workload=list_add_stack n=100000 sum=51031728 time_ns=202194 node_size=8 contiguous_links=99999/99999 (100.00%)

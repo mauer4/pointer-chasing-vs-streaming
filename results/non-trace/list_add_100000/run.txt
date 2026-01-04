@@ -1,0 +1,1 @@
+workload=list_add n=100000 sum=51031728 time_ns=221998 node_size=16 contiguous_links=99999/99999 (100.00%)

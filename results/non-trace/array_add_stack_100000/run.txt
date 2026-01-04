@@ -1,0 +1,1 @@
+workload=array_add_stack n=100000 sum=51031728 time_ns=35893
